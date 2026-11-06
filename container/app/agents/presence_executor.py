@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from app.agents.action_executor import resolve_and_validate_entity
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 
 logger = logging.getLogger(__name__)
@@ -214,7 +215,10 @@ async def _query_presence(
         }
 
     state = state_resp.get("state")
-    name = _display_name(entity_id, state_resp)
+    # A device_tracker can be a user-named device entity: speak its index name.
+    attrs = state_resp.get("attributes")
+    name = entity_display_name(entity_index, entity_id, attrs if isinstance(attrs, dict) else None).strip()
+    name = name or entity_id
     return {
         "success": True,
         "entity_id": entity_id,

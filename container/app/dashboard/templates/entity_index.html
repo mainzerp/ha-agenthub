@@ -218,10 +218,13 @@
                         </div>
                         <div class="stat-card">
                             <div class="stat-card-header">
-                                <span class="stat-card-label">Friendly Name</span>
+                                <span class="stat-card-label">Name</span>
                             </div>
                             <div class="stat-card-value text-95"
                                  x-text="previewResult.deterministic.friendly_name || '-'"></div>
+                            <div class="text-dim text-xs"
+                                 x-show="previewResult.deterministic.ha_friendly_name"
+                                 x-text="'HA friendly_name: ' + previewResult.deterministic.ha_friendly_name"></div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-card-header">
@@ -308,7 +311,7 @@
                             <thead>
                                 <tr>
                                     <th>Entity ID</th>
-                                    <th>Friendly Name</th>
+                                    <th>Name</th>
                                     <th>Domain</th>
                                     <th>Area</th>
                                     <th class="text-right">Score</th>
@@ -321,7 +324,11 @@
                                         <td class="text-nowrap">
                                             <span class="badge badge-teal" x-text="c.entity_id"></span>
                                         </td>
-                                        <td x-text="c.friendly_name"></td>
+                                        <td>
+                                            <span x-text="c.friendly_name"></span>
+                                            <div class="text-dim text-xs" x-show="c.ha_friendly_name"
+                                                 x-text="'HA: ' + c.ha_friendly_name"></div>
+                                        </td>
                                         <td><span class="badge" x-text="c.domain || '-'"></span></td>
                                         <td x-text="c.area || '-'"></td>
                                         <td class="text-right tabular-nums"

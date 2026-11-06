@@ -19,6 +19,7 @@ from app.agents.executor_state_check import (
     lacks_feature,
     verification_previous_state,
 )
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -306,10 +307,10 @@ async def execute_cover_action(
 # ---------------------------------------------------------------------------
 
 
-def _format_cover_state(entity_id: str, state_resp: dict) -> str:
+def _format_cover_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     parts = [f"{friendly_name} is {state}"]
     current_position = attrs.get("current_position")
@@ -370,7 +371,11 @@ async def _query_cover_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_cover_state(entity_id, state_resp)
+        speech = _format_cover_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -415,7 +420,7 @@ async def _list_covers(ha_client: Any, agent_id: str | None = None, entity_index
     for s in cover_states:
         eid = s.get("entity_id", "")
         attrs = s.get("attributes", {})
-        name = attrs.get("friendly_name", eid)
+        name = entity_display_name(entity_index, eid, attrs)
         state = s.get("state", "unknown")
         info = f"{name}: {state}"
         current_position = attrs.get("current_position")

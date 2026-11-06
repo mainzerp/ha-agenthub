@@ -185,8 +185,11 @@ The **Entity Index** page at `/dashboard/entity-index` manages how Home Assistan
 - **Aliases** -- create aliases such as "nightstand lamp" that map to `light.bedroom_nightstand`.
 - **Matching signal weights** -- adjust the weights for Levenshtein, Jaro-Winkler, phonetic, and alias signals.
 - **Per-agent visibility rules** -- control which entities each agent can see.
+- **Match preview** -- shows the name each candidate is matched by; when it differs from Home Assistant's friendly name, the friendly name is shown underneath.
 
 Use this page when commands match the wrong device or no device at all.
+
+**Naming entities** -- give the entities you talk to their own name in Home Assistant (entity settings, *Name*). An entity you named is matched and spoken by that name, whatever its device is called: Home Assistant 2026.11 shows it as "device name + entity name", but HA-AgentHub drops the device name again. An entity without its own name keeps Home Assistant's name, and a device's main entity is called by the device name, so name the device well for those. If an entity's own name would equal the name of another entity of the same kind (two media players, two lights), it keeps Home Assistant's full name with the device name so the two stay distinguishable; give them distinct names. Names Home Assistant froze in the 2026.11 upgrade and names set with `customize` are used as they are.
 
 ### MCP Servers
 

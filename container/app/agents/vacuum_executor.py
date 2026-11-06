@@ -14,6 +14,7 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import failure_speech, is_redundant_action, verification_previous_state
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.models.agent import TaskContext
 
@@ -235,10 +236,10 @@ async def execute_vacuum_action(
 # ---------------------------------------------------------------------------
 
 
-def _format_vacuum_state(entity_id: str, state_resp: dict) -> str:
+def _format_vacuum_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     parts = [f"{friendly_name} is {state}"]
     battery = attrs.get("battery_level")
@@ -302,7 +303,11 @@ async def _query_vacuum_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_vacuum_state(entity_id, state_resp)
+        speech = _format_vacuum_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -347,7 +352,7 @@ async def _list_vacuums(ha_client: Any, agent_id: str | None = None, entity_inde
     for s in vacuum_states:
         eid = s.get("entity_id", "")
         attrs = s.get("attributes", {})
-        name = attrs.get("friendly_name", eid)
+        name = entity_display_name(entity_index, eid, attrs)
         state = s.get("state", "unknown")
         info = f"{name}: {state}"
         battery = attrs.get("battery_level")

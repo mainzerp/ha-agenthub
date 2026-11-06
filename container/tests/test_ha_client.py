@@ -20,7 +20,7 @@ from app.ha_client.auth import (
 )
 from app.ha_client.rest import HARestClient, allow_internal_ha_service_calls
 from app.ha_client.rest import test_ha_connection as _test_ha_connection
-from app.ha_client.websocket import HAWebSocketClient
+from app.ha_client.websocket import EntityRegistryInfo, HAWebSocketClient
 from tests._ha_stubs import install_ha_stubs
 
 # ---------------------------------------------------------------------------
@@ -189,30 +189,41 @@ class TestHARestClient:
         await client.close()
 
     async def test_get_hidden_entity_ids_returns_last_known_on_ws_failure(self):
-        """A failed WS registry fetch must not overwrite the last known set."""
+        """A failed WS registry fetch must not overwrite the last known set or names."""
         client = HARestClient()
         ws_mock = MagicMock()
         ws_mock.is_connected.return_value = True
-        ws_mock.get_hidden_entity_ids = AsyncMock(return_value={"light.hidden"})
+        ws_mock.get_entity_registry = AsyncMock(
+            return_value=EntityRegistryInfo(
+                hidden_ids=frozenset({"light.hidden"}), user_names={"light.wohnzimmer": "Wohnzimmer"}
+            )
+        )
         client._state_observer = ws_mock
 
         assert await client.get_hidden_entity_ids() == {"light.hidden"}
+        assert client.hidden_entity_ids_loaded is True
+        # One WS round trip serves both views within the TTL.
+        assert (await client.get_entity_registry()).user_names == {"light.wohnzimmer": "Wohnzimmer"}
+        ws_mock.get_entity_registry.assert_awaited_once()
 
         client.clear_area_registry_cache()
-        ws_mock.get_hidden_entity_ids = AsyncMock(return_value=None)
+        ws_mock.get_entity_registry = AsyncMock(return_value=None)
 
         assert await client.get_hidden_entity_ids() == {"light.hidden"}
-        assert "hidden_entity_ids" not in client._registry_cache
+        assert (await client.get_entity_registry()).user_names == {"light.wohnzimmer": "Wohnzimmer"}
+        assert "entity_registry" not in client._registry_cache
 
     async def test_get_hidden_entity_ids_empty_when_ws_unavailable_and_no_prior(self):
-        """No WS and no prior fetch -> empty set, and the failure is not cached."""
+        """No WS and no prior fetch -> empty set and no names, and the failure is not cached."""
         client = HARestClient()
         ws_mock = MagicMock()
         ws_mock.is_connected.return_value = False
         client._state_observer = ws_mock
 
         assert await client.get_hidden_entity_ids() == set()
-        assert "hidden_entity_ids" not in client._registry_cache
+        assert (await client.get_entity_registry()).user_names == {}
+        assert client.hidden_entity_ids_loaded is False
+        assert "entity_registry" not in client._registry_cache
 
     @respx.mock
     async def test_fire_event_posts_correct_endpoint(self):

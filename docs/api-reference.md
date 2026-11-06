@@ -788,7 +788,7 @@ including `tiers.response` shapes) are rejected on import.
 Get cache statistics per tier: `{"routing": {...}, "action": {...}}`.
 The `action` object additionally carries `deletions` (action-row
 deletion counts by reason since process start, e.g. `registry_event`,
-`visibility_rejected`, `validator`, `manual_delete`, `flush`,
+`entity_name_changed`, `visibility_rejected`, `validator`, `manual_delete`, `flush`,
 `startup_legacy_schema`) and `deletions_deferred_index_not_ready`
 (visibility rejections kept because the entity index had not loaded its
 first snapshot).
@@ -1166,6 +1166,11 @@ Auth: admin session.
 
 Auth: admin session. Companion to the existing `/api/admin/entity-index/stats`
 and `/api/admin/entity-index/refresh` endpoints documented above.
+
+`deterministic.friendly_name` and each `hybrid[].friendly_name` carry the
+index name (the entity's own name for a user-named device entity, see
+[Architecture](architecture.md#entity-names)); `ha_friendly_name` carries
+Home Assistant's `friendly_name` attribute when it differs, else `null`.
 
 Note: the runtime primary path for entity selection is agent-side keyword
 recall + LLM selection from a closed candidate list; this endpoint previews

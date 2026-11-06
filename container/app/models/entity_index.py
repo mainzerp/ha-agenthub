@@ -13,7 +13,20 @@ class EntityIndexEntry(BaseModel):
     """A Home Assistant entity stored in the pre-embedded entity index."""
 
     entity_id: str = Field(..., description="HA entity ID (e.g., light.kitchen_ceiling)")
-    friendly_name: str = Field("", description="Human-readable entity name")
+    friendly_name: str = Field(
+        "",
+        description=(
+            "Name the index matches and speaks: the entity's own name for a user-named device entity "
+            "(see app.entity.naming), else HA's friendly_name attribute."
+        ),
+    )
+    ha_friendly_name: str | None = Field(
+        None,
+        description=(
+            "HA's friendly_name attribute as received, for audit and the dashboard. None when unknown "
+            "(entries built outside ingest). Not part of content_hash or embedding_text."
+        ),
+    )
     domain: str = Field("", description="HA domain (e.g., light, switch, climate)")
     area: str | None = Field(None, description="HA area/room ID assignment")
     area_name: str | None = Field(
@@ -34,6 +47,17 @@ class EntityIndexEntry(BaseModel):
     has_date: bool = Field(False, description="input_datetime runtime flag")
     has_time: bool = Field(False, description="input_datetime runtime flag")
     _content_hash: str | None = PrivateAttr(default=None)
+
+    @property
+    def raw_friendly_name(self) -> str:
+        """HA's friendly_name attribute; falls back to ``friendly_name`` when it is unknown."""
+        return self.ha_friendly_name if self.ha_friendly_name is not None else self.friendly_name
+
+    def with_name(self, name: str) -> EntityIndexEntry:
+        """Copy of this entry with ``friendly_name`` replaced (cached content hash dropped)."""
+        updated = self.model_copy(update={"friendly_name": name})
+        updated._content_hash = None
+        return updated
 
     @property
     def embedding_text(self) -> str:

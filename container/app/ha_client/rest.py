@@ -18,7 +18,7 @@ import httpx
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_auth_headers
-from app.ha_client.websocket import WebSocketResetError
+from app.ha_client.websocket import EntityRegistryInfo, WebSocketResetError
 from app.security.sensitive_actions import enforce_sensitive_call_policy, policy_already_enforced
 
 if TYPE_CHECKING:
@@ -152,9 +152,10 @@ class HARestClient:
         # last-good value instead of an empty lookup that would wipe area,
         # alias and device enrichment for every entity.
         self._registry_last_good: dict[str, Any] = {}
-        # Last successfully fetched hidden/disabled entity ids; used as a
-        # fallback so a transient WS outage cannot wipe hidden filtering.
-        self._last_hidden_entity_ids: set[str] | None = None
+        # Last successfully fetched entity registry (hidden/disabled ids and
+        # user-set names); used as a fallback so a transient WS outage cannot
+        # wipe hidden filtering or the entities' own names.
+        self._last_entity_registry: EntityRegistryInfo | None = None
 
     async def initialize(self) -> None:
         """Load HA URL from settings and create httpx client."""
@@ -731,46 +732,60 @@ class HARestClient:
         Before that, :meth:`get_hidden_entity_ids` returns an empty set that
         does NOT mean "no hidden entities" (the registry is WebSocket-only).
         """
-        return self._last_hidden_entity_ids is not None
+        return self._last_entity_registry is not None
 
-    async def get_hidden_entity_ids(self) -> set[str]:
-        """Return entity IDs that are hidden or disabled in HA's entity registry.
+    async def get_entity_registry(self) -> EntityRegistryInfo:
+        """Return hidden/disabled ids and user-set names from HA's entity registry.
 
         HA only exposes the entity registry via WebSocket
-        (``config/entity_registry/list``).  If the WebSocket observer is
-        available and connected we use it; otherwise we fall back to the
-        legacy REST endpoint (which returns 404 on current HA versions) and
-        simply return an empty set so ingest is not blocked.
+        (``config/entity_registry/list``), so one WS round trip serves both.
+        A success is cached for the registry TTL (dropped by
+        :meth:`clear_area_registry_cache` on registry events) and kept as
+        last-good. A failed or unavailable fetch is not cached and returns
+        the last-good registry, or an empty one before the first success
+        (see :attr:`hidden_entity_ids_loaded`).
         """
-        cached = self._registry_cache_get("hidden_entity_ids")
+        cached = self._registry_cache_get("entity_registry")
         if cached is not None:
             return cached
-        result: set[str] | None = None
+        result: EntityRegistryInfo | None = None
         # PREFER-WS: entity registry is a WebSocket-only API in HA.
         ws = self._state_observer
         if ws is not None and ws.is_connected():
             try:
-                result = await ws.get_hidden_entity_ids()
+                result = await ws.get_entity_registry()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.debug("WebSocket get_hidden_entity_ids failed", exc_info=True)
+                logger.debug("WebSocket get_entity_registry failed", exc_info=True)
                 result = None
         else:
             logger.debug(
                 "WebSocket not available for entity_registry query "
-                "(ws=%s connected=%s); keeping last known hidden ids for this sync.",
+                "(ws=%s connected=%s); keeping last known registry data for this sync.",
                 ws is not None,
                 ws.is_connected() if ws else False,
             )
-        if result is None:
-            # A failed fetch must never look like "no hidden entities":
-            # do not cache it, and fall back to the last known set.
-            return set(self._last_hidden_entity_ids) if self._last_hidden_entity_ids is not None else set()
-        self._last_hidden_entity_ids = result
-        self._registry_cache_put("hidden_entity_ids", result)
-        logger.info("Fetched %d hidden/disabled entities from HA registry", len(result))
+        if not isinstance(result, EntityRegistryInfo):
+            # A failed fetch must never look like "no hidden entities" or
+            # "no user names": do not cache it, fall back to the last known data.
+            return self._last_entity_registry if self._last_entity_registry is not None else EntityRegistryInfo()
+        self._last_entity_registry = result
+        self._registry_cache_put("entity_registry", result)
+        logger.info(
+            "Fetched %d hidden/disabled entities and %d user-set entity names from HA registry",
+            len(result.hidden_ids),
+            len(result.user_names),
+        )
         return result
+
+    async def get_hidden_entity_ids(self) -> set[str]:
+        """Return entity IDs that are hidden or disabled in HA's entity registry.
+
+        Thin view of :meth:`get_entity_registry` (same cache and last-good
+        fallback); an empty set before the first successful fetch.
+        """
+        return set((await self.get_entity_registry()).hidden_ids)
 
     async def get_user_language(self) -> str | None:
         """Return the HA-configured UI language code (e.g. ``de``, ``en``)."""

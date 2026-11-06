@@ -18,6 +18,7 @@ from app.agents.action_executor import (
     unverified_speech,
 )
 from app.agents.executor_state_check import failure_speech, is_redundant_action, verification_previous_state
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -460,10 +461,10 @@ execute_action = execute_light_action
 # ---------------------------------------------------------------------------
 
 
-def _format_light_state(entity_id: str, state_resp: dict) -> str:
+def _format_light_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     if entity_id.startswith("switch."):
         return f"{friendly_name} is {state}."
@@ -544,7 +545,11 @@ async def _query_light_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_light_state(entity_id, state_resp)
+        speech = _format_light_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -642,7 +647,7 @@ async def _list_lights(
     for s in candidate_states:
         eid = s.get("entity_id", "")
         state = s.get("state", "unknown")
-        name = s.get("attributes", {}).get("friendly_name", eid)
+        name = entity_display_name(entity_index, eid, s.get("attributes"))
         if eid.startswith("light."):
             if state == "on":
                 lights_on.append(name)

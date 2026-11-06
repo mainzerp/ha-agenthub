@@ -14,9 +14,17 @@ from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import SettingsRepository
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.index import EntityIndex
-from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.entity.ingest import (
+    parse_ha_states,
+    snapshot_name_suppression,
+    state_friendly_name,
+    state_to_entity_index_entry,
+)
+from app.entity.naming import choose_entity_name, compute_name_suppression
 from app.ha_client.devices import get_device_directory
 from app.ha_client.persons import PERSON_ENTITY_PREFIX, get_person_directory, person_identity_changed
+from app.ha_client.websocket import EntityRegistryInfo
+from app.models.entity_index import EntityIndexEntry
 from app.security.sensitive_actions import register_entity_index
 from app.util.tasks import spawn
 
@@ -24,7 +32,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from app.ha_client.rest import HARestClient
-    from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,17 @@ RELEVANT_REGISTRY_FIELDS = frozenset(
 # device name (indexed as ``device_name``) and the area entities inherit.
 # Disabling a device is reported per entity by HA (entity ``disabled_by``).
 RELEVANT_DEVICE_FIELDS = frozenset({"name", "name_by_user", "area_id"})
+
+# Action-cache deletion reason when an entity's index name changed outside a
+# registry event's own entities: a full sync found a different stored name
+# (first sync after the own-name rule shipped, names changed while the WS was
+# down), a state_changed push carried a new name, or a registry event flipped
+# another entity through the name-collision guard. Cached rows still speak
+# the old name.
+NAME_CHANGE_REASON = "entity_name_changed"
+# app.state attribute holding name-change invalidations recorded before the
+# cache manager existed; setup_entity_observers flushes them.
+_PENDING_NAME_INVALIDATIONS_ATTR = "pending_entity_name_invalidations"
 
 # Set on the EntityIndex instance created at bootstrap: False until the first
 # full HA snapshot is installed. An index that was never tracked counts as
@@ -190,20 +208,110 @@ def _store_entity_lookups(
     alias_lookup: dict,
     device_lookup: dict,
     area_id_lookup: dict,
+    *,
+    user_name_lookup: dict | None = None,
+    name_suppressed: frozenset[str] | set[str] | None = None,
 ) -> None:
     """Atomically publish HA registry lookups on ``app.state``.
 
     The dict is rebuilt and assigned in a single statement so concurrent
     readers (notably ``on_state_changed``) always observe a consistent
     snapshot of area/alias/device/area_id lookups, never a partially
-    populated one.
+    populated one. ``user_name`` (entity_id -> user-set registry name) and
+    ``name_suppressed`` (ids whose own name collides, computed over the full
+    snapshot) let incremental ingests apply the snapshot's naming decision
+    in O(1).
     """
     app.state.entity_lookups = {
         "area": area_lookup or {},
         "alias": alias_lookup or {},
         "device": device_lookup or {},
         "area_id": area_id_lookup or {},
+        "user_name": user_name_lookup or {},
+        "name_suppressed": frozenset(name_suppressed or ()),
     }
+
+
+async def _fetch_entity_registry(ha_client: HARestClient) -> tuple[set[str], dict[str, str]]:
+    """Hidden/disabled ids and user-set entity names from one entity-registry read.
+
+    Clients without ``get_entity_registry`` (test doubles) fall back to
+    ``get_hidden_entity_ids`` with no user names, which keeps HA's
+    friendly_names.
+    """
+    getter = getattr(ha_client, "get_entity_registry", None)
+    if callable(getter):
+        info = None
+        try:
+            info = await getter()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Entity registry read failed; falling back to the hidden-id list", exc_info=True)
+        if isinstance(info, EntityRegistryInfo):
+            return set(info.hidden_ids), dict(info.user_names)
+    return await ha_client.get_hidden_entity_ids(), {}
+
+
+async def _invalidate_entity_name_changes(
+    app: FastAPI,
+    entity_ids,
+    *,
+    detail: str,
+    cache_manager=None,
+) -> None:
+    """Delete action and routing rows of entities whose index name changed.
+
+    Background/sync paths only, never the turn path. Before the cache
+    manager exists the ids are recorded and flushed by
+    ``setup_entity_observers``.
+    """
+    ids = sorted({str(entity_id) for entity_id in entity_ids or () if entity_id})
+    if not ids:
+        return
+    manager = cache_manager if cache_manager is not None else getattr(app.state, "cache_manager", None)
+    invalidate = getattr(manager, "invalidate_by_entity_id", None)
+    if not callable(invalidate):
+        pending = getattr(app.state, _PENDING_NAME_INVALIDATIONS_ATTR, None)
+        if not isinstance(pending, set):
+            pending = set()
+            setattr(app.state, _PENDING_NAME_INVALIDATIONS_ATTR, pending)
+        pending.update(ids)
+        logger.info("Entity name changes recorded until the action cache is ready: %s", ids)
+        return
+    try:
+        counts = await invalidate(ids, reason=NAME_CHANGE_REASON, detail=detail)
+    except Exception:
+        logger.warning("Cache invalidation for entity name changes failed: %s", ids, exc_info=True)
+        return
+    counts = counts if isinstance(counts, dict) else {}
+    logger.info(
+        "Cache invalidation for entity name changes: entities=%s action=%s routing=%s (%s)",
+        ids,
+        counts.get("action", 0),
+        counts.get("routing", 0),
+        detail,
+    )
+
+
+async def sync_entity_snapshot(
+    app: FastAPI,
+    entity_index: EntityIndex,
+    entities: list[EntityIndexEntry],
+    snapshot_generation: int | None,
+    *,
+    reason: str,
+) -> dict:
+    """Diff-sync a full snapshot into the index and invalidate renamed entities' cache rows.
+
+    ``EntityIndex.sync`` reports entities whose stored name differs from the
+    snapshot (``renamed``); their action-cache rows still speak the old name.
+    """
+    result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+    renamed = result.get("renamed") if isinstance(result, dict) else None
+    if isinstance(renamed, list) and renamed:
+        await _invalidate_entity_name_changes(app, renamed, detail=f"path=sync:{reason}")
+    return result
 
 
 async def _resolve_active_embedding_model() -> str:
@@ -271,36 +379,36 @@ def _hidden_ids_loaded(ha_client: HARestClient | None) -> bool:
     return value if isinstance(value, bool) else True
 
 
-async def _hidden_ids_for_first_snapshot(app: FastAPI, ha_client: HARestClient) -> set[str]:
-    """Hidden/disabled entity ids for the first entity-index snapshot.
+async def _registry_for_first_snapshot(app: FastAPI, ha_client: HARestClient) -> tuple[set[str], dict[str, str]]:
+    """Hidden/disabled entity ids and user-set names for the first entity-index snapshot.
 
     HA exposes the entity registry only over the WebSocket, which usually
     connects after the prime starts. Installing the snapshot before the
     list is known made hidden entities searchable until a later re-sync, so
     the prime waits (bounded by ``_FIRST_SNAPSHOT_HIDDEN_WAIT_SEC``) for the
     WebSocket and the registry. When the list is still unreadable, the
-    snapshot is installed without the filter (degraded) and the next sync
-    applies it.
+    snapshot is installed without the filter and with HA's friendly_names
+    (degraded) and the next sync applies both.
     """
-    hidden_ids = await ha_client.get_hidden_entity_ids()
+    hidden_ids, user_names = await _fetch_entity_registry(ha_client)
     if _hidden_ids_loaded(ha_client):
-        return hidden_ids
+        return hidden_ids, user_names
     logger.info("Entity index prime: waiting for the HA entity registry (hidden/disabled entities)")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _FIRST_SNAPSHOT_HIDDEN_WAIT_SEC
     while (remaining := deadline - loop.time()) > 0:
         if not await _wait_for_ws_connection(app, timeout=remaining):
             break
-        hidden_ids = await ha_client.get_hidden_entity_ids()
+        hidden_ids, user_names = await _fetch_entity_registry(ha_client)
         if _hidden_ids_loaded(ha_client):
-            return hidden_ids
+            return hidden_ids, user_names
         await asyncio.sleep(min(_HIDDEN_IDS_RETRY_SEC, max(deadline - loop.time(), 0.0)))
     logger.warning(
         "Entity index prime: HA hidden/disabled entity list unavailable after %.0fs; "
         "installing the first snapshot without the hidden filter until the next sync",
         _FIRST_SNAPSHOT_HIDDEN_WAIT_SEC,
     )
-    return hidden_ids
+    return hidden_ids, user_names
 
 
 async def _refresh_device_directory(ha_client: HARestClient, area_lookup: dict | None = None) -> None:
@@ -316,7 +424,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
     try:
         # The hidden list is resolved BEFORE the states snapshot so the first
         # snapshot never makes hidden / disabled entities searchable.
-        hidden_ids = await _hidden_ids_for_first_snapshot(app, ha_client)
+        hidden_ids, user_names = await _registry_for_first_snapshot(app, ha_client)
         app.state.hidden_entity_ids = hidden_ids
         snapshot_generation = _snapshot_generation(entity_index)
         states = await ha_client.get_states()
@@ -325,7 +433,18 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
             ha_client, _previous_lookups(app)
         )
-        _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+        name_suppressed = snapshot_name_suppression(
+            states, user_name_lookup=user_names, device_lookup=device_lookup, hidden_ids=hidden_ids
+        )
+        _store_entity_lookups(
+            app,
+            area_lookup,
+            alias_lookup,
+            device_lookup,
+            area_id_lookup,
+            user_name_lookup=user_names,
+            name_suppressed=name_suppressed,
+        )
         _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
         await _refresh_device_directory(ha_client, area_lookup)
         entities = parse_ha_states(
@@ -335,6 +454,8 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             device_lookup=device_lookup,
             area_id_lookup=area_id_lookup,
             hidden_ids=hidden_ids,
+            user_name_lookup=user_names,
+            name_suppressed=name_suppressed,
         )
         # 0.23.0: detect stale on-disk index built before the
         # EntityIndexEntry shape changed -- or built with a different
@@ -398,7 +519,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
 
         if existing_count > 0 and not force_rebuild:
             _set_entity_index_pending_status(entity_index, state="syncing", total=len(entities))
-            result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+            result = await sync_entity_snapshot(app, entity_index, entities, snapshot_generation, reason="prime")
             logger.info(
                 "Entity index synced in background (existing=%d): +%d ~%d -%d =%d",
                 existing_count,
@@ -509,10 +630,21 @@ async def build_entity_snapshot(app: FastAPI, ha_client: HARestClient) -> list[E
     area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
         ha_client, _previous_lookups(app)
     )
-    _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
+    hidden_ids, user_names = await _fetch_entity_registry(ha_client)
+    name_suppressed = snapshot_name_suppression(
+        states, user_name_lookup=user_names, device_lookup=device_lookup, hidden_ids=hidden_ids
+    )
+    _store_entity_lookups(
+        app,
+        area_lookup,
+        alias_lookup,
+        device_lookup,
+        area_id_lookup,
+        user_name_lookup=user_names,
+        name_suppressed=name_suppressed,
+    )
     _set_area_assignment_status(getattr(app.state, "entity_index", None), ha_client, area_id_lookup)
     await _refresh_device_directory(ha_client, area_lookup)
-    hidden_ids = await ha_client.get_hidden_entity_ids()
     app.state.hidden_entity_ids = hidden_ids
     return parse_ha_states(
         states,
@@ -521,6 +653,8 @@ async def build_entity_snapshot(app: FastAPI, ha_client: HARestClient) -> list[E
         device_lookup=device_lookup,
         area_id_lookup=area_id_lookup,
         hidden_ids=hidden_ids,
+        user_name_lookup=user_names,
+        name_suppressed=name_suppressed,
     )
 
 
@@ -560,7 +694,7 @@ async def resync_entity_index(app: FastAPI, *, reason: str) -> dict | None:
         return None
     snapshot_generation = _snapshot_generation(entity_index)
     entities = await build_entity_snapshot(app, ha_client)
-    result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+    result = await sync_entity_snapshot(app, entity_index, entities, snapshot_generation, reason=reason)
     logger.info(
         "Entity sync (%s): +%d ~%d -%d =%d",
         reason,
@@ -766,31 +900,93 @@ async def _resolve_registry_event(
     return [], ""
 
 
+async def _rederive_entity_names(
+    entity_index: EntityIndex,
+    user_names: dict[str, str],
+    device_lookup: dict,
+    name_suppressed: frozenset[str],
+    *,
+    skip: set[str],
+) -> list[str]:
+    """Re-apply the naming rule to indexed entities outside ``skip``; return the ids whose name changed.
+
+    A registry event can make another entity's own name collide or stop
+    colliding (``app.entity.naming.compute_name_suppression``) although that
+    entity's own data did not change. Its entry is rewritten from its stored
+    HA friendly_name; no HA call.
+    """
+    changed: list[str] = []
+    for entry in entity_index.list_entries():
+        if not isinstance(entry, EntityIndexEntry) or entry.entity_id in skip:
+            continue
+        entity_id = entry.entity_id
+        name = choose_entity_name(
+            entry.raw_friendly_name,
+            user_names.get(entity_id),
+            device_lookup.get(entity_id),
+            suppressed=entity_id in name_suppressed,
+        )
+        if name != entry.friendly_name:
+            await entity_index.add_async(entry.with_name(name))
+            changed.append(entity_id)
+    return changed
+
+
 async def _refresh_registry_entities(
     app: FastAPI,
     ha_client: HARestClient,
     entity_index: EntityIndex,
     entity_ids: list[str],
-) -> None:
-    """Refresh or remove entity-index rows affected by a HA registry event."""
+) -> list[str]:
+    """Refresh or remove entity-index rows affected by a HA registry event.
+
+    Publishes fresh lookups, including the user-set names and the
+    name-collision suppression set recomputed over the whole index (the
+    event's entities with their fresh HA state, every other entity with its
+    stored HA friendly_name; O(n), no extra HA call). Returns the ids of
+    OTHER indexed entities whose index name changed through that
+    recomputation; the caller invalidates their action-cache rows (the
+    event's own entities are invalidated by the event handler).
+    """
     if not entity_ids:
-        return
+        return []
 
     area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(
         ha_client, _previous_lookups(app)
     )
-    _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
-    _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
-    hidden_ids = await ha_client.get_hidden_entity_ids()
+    hidden_ids, user_names = await _fetch_entity_registry(ha_client)
     app.state.hidden_entity_ids = hidden_ids
 
+    fresh_states: dict[str, dict | None] = {}
     for entity_id in entity_ids:
         try:
-            state = await ha_client.get_state(entity_id)
+            fresh_states[entity_id] = await ha_client.get_state(entity_id)
         except Exception:
             logger.warning("Registry refresh failed for %s", entity_id, exc_info=True)
-            continue
 
+    friendly_names: dict[str, str] = {
+        entry.entity_id: entry.raw_friendly_name
+        for entry in entity_index.list_entries()
+        if isinstance(entry, EntityIndexEntry)
+    }
+    for entity_id, state in fresh_states.items():
+        if isinstance(state, dict) and entity_id not in hidden_ids:
+            friendly_names[entity_id] = state_friendly_name(state)
+        else:
+            friendly_names.pop(entity_id, None)
+    name_suppressed = compute_name_suppression(friendly_names.items(), user_names, device_lookup)
+    _store_entity_lookups(
+        app,
+        area_lookup,
+        alias_lookup,
+        device_lookup,
+        area_id_lookup,
+        user_name_lookup=user_names,
+        name_suppressed=name_suppressed,
+    )
+    _set_area_assignment_status(entity_index, ha_client, area_id_lookup)
+
+    for entity_id, state in fresh_states.items():
         if state is None or entity_id in hidden_ids:
             await entity_index.remove_async(entity_id)
             continue
@@ -802,8 +998,12 @@ async def _refresh_registry_entities(
             alias_lookup=alias_lookup,
             device_lookup=device_lookup,
             area_id_lookup=area_id_lookup,
+            user_name_lookup=user_names,
+            name_suppressed=name_suppressed,
         )
         await entity_index.add_async(entry)
+
+    return await _rederive_entity_names(entity_index, user_names, device_lookup, name_suppressed, skip=set(entity_ids))
 
 
 async def setup_entity_index(app: FastAPI, source: str, ha_client: HARestClient, vector_store) -> EntityIndex:
@@ -859,9 +1059,16 @@ async def setup_entity_observers(
                 if batch:
                     try:
                         loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, entity_index.batch_add, batch)
+                        renamed = await loop.run_in_executor(None, entity_index.batch_add, batch)
                     except Exception:
                         logger.warning("Batch entity index update failed", exc_info=True)
+                        continue
+                    # A push that changed an entity's index name (HA rename,
+                    # customize reload, or one that raced a lookup refresh).
+                    if isinstance(renamed, list) and renamed:
+                        await _invalidate_entity_name_changes(
+                            app, renamed, detail="path=state_changed", cache_manager=cache_manager
+                        )
 
         async def on_state_changed(event: dict) -> None:
             data = event.get("data", {})
@@ -895,6 +1102,8 @@ async def setup_entity_observers(
                     alias_lookup=lookups.get("alias") or {},
                     device_lookup=lookups.get("device") or {},
                     area_id_lookup=lookups.get("area_id") or {},
+                    user_name_lookup=lookups.get("user_name") or {},
+                    name_suppressed=lookups.get("name_suppressed") or frozenset(),
                 )
                 entity_update_queue.put_nowait(entry)
 
@@ -923,13 +1132,23 @@ async def setup_entity_observers(
                 )
             return resolved_entity_ids
 
+        async def _refresh_after_registry_event(resolved_entity_ids: list[str], *, kind: str) -> None:
+            renamed = await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            if isinstance(renamed, list) and renamed:
+                await _invalidate_entity_name_changes(
+                    app,
+                    renamed,
+                    detail=f"path=registry_refresh:{kind} (name collision guard)",
+                    cache_manager=cache_manager,
+                )
+
         # Every registry handler drops the 5-minute registry cache first:
         # area and device renames otherwise re-ingest stale area / device
         # names from the cached lookups.
         async def on_entity_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event, kind="entity")
-            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            await _refresh_after_registry_event(resolved_entity_ids, kind="entity")
 
         # Device and area events also refresh the satellite origin map
         # (device_id -> area): device creation or a device moved to another
@@ -937,13 +1156,13 @@ async def setup_entity_observers(
         async def on_device_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event, kind="device")
-            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            await _refresh_after_registry_event(resolved_entity_ids, kind="device")
             await _refresh_device_directory(ha_client, _previous_lookups(app).get("area"))
 
         async def on_area_registry_updated(event: dict) -> None:
             ha_client.clear_area_registry_cache()
             resolved_entity_ids = await _invalidate_registry_event(event, kind="area")
-            await _refresh_registry_entities(app, ha_client, entity_index, resolved_entity_ids)
+            await _refresh_after_registry_event(resolved_entity_ids, kind="area")
             await _refresh_device_directory(ha_client)
 
         # Registry refresh work issues send_command round-trips whose
@@ -994,11 +1213,22 @@ async def setup_entity_observers(
     if ha_client is not None and ws_client is not None:
         ha_client.set_state_observer(ws_client)
 
+    # Name-change invalidations recorded before the cache manager existed.
+    pending_names = getattr(app.state, _PENDING_NAME_INVALIDATIONS_ATTR, None)
+    if isinstance(pending_names, set) and pending_names and cache_manager is not None:
+        setattr(app.state, _PENDING_NAME_INVALIDATIONS_ATTR, set())
+        await _invalidate_entity_name_changes(
+            app,
+            pending_names,
+            detail="path=sync (recorded before the action cache was ready)",
+            cache_manager=cache_manager,
+        )
+
     # WS-HIDDEN-SYNC: the prime waits (bounded) for the WS to read the hidden
     # list before its first snapshot. This task runs after the prime and
-    # re-syncs the index when the hidden list it reads over the WS differs
-    # from the one the snapshot was built with (degraded prime, or hidden
-    # flags changed meanwhile).
+    # re-syncs the index when the hidden list or the user-set entity names it
+    # reads over the WS differ from the ones the snapshot was built with
+    # (degraded prime, or registry changed meanwhile).
     async def _deferred_hidden_entity_sync() -> None:
         logger.info("Deferred hidden-entity sync task started")
         try:
@@ -1013,26 +1243,49 @@ async def setup_entity_observers(
                 await asyncio.sleep(1.0)
                 # Read the registry over the WebSocket directly, bypassing the
                 # REST client's TTL-cached list.
-                hidden_ids = await ws_client.get_hidden_entity_ids()
-                if hidden_ids is None:
+                registry = await ws_client.get_entity_registry()
+                if not isinstance(registry, EntityRegistryInfo):
                     logger.info("Deferred hidden-entity sync: registry fetch failed, keeping existing index")
                     return
-                logger.info("Deferred hidden-entity sync: hidden_ids=%d", len(hidden_ids))
+                hidden_ids = set(registry.hidden_ids)
+                user_names = dict(registry.user_names)
+                logger.info(
+                    "Deferred hidden-entity sync: hidden_ids=%d user_names=%d", len(hidden_ids), len(user_names)
+                )
                 indexed_hidden_ids = getattr(app.state, "hidden_entity_ids", None) or set()
-                if hidden_ids != indexed_hidden_ids:
+                lookups = getattr(app.state, "entity_lookups", None) or {}
+                indexed_user_names = lookups.get("user_name") or {}
+                if hidden_ids != indexed_hidden_ids or user_names != indexed_user_names:
                     app.state.hidden_entity_ids = hidden_ids
                     snapshot_generation = _snapshot_generation(entity_index)
                     states = await ha_client.get_states()
                     lookups = getattr(app.state, "entity_lookups", None) or {}
+                    device_lookup = lookups.get("device") or {}
+                    name_suppressed = snapshot_name_suppression(
+                        states, user_name_lookup=user_names, device_lookup=device_lookup, hidden_ids=hidden_ids
+                    )
+                    _store_entity_lookups(
+                        app,
+                        lookups.get("area") or {},
+                        lookups.get("alias") or {},
+                        device_lookup,
+                        lookups.get("area_id") or {},
+                        user_name_lookup=user_names,
+                        name_suppressed=name_suppressed,
+                    )
                     entities = parse_ha_states(
                         states,
                         area_lookup=lookups.get("area") or {},
                         alias_lookup=lookups.get("alias") or {},
-                        device_lookup=lookups.get("device") or {},
+                        device_lookup=device_lookup,
                         area_id_lookup=lookups.get("area_id") or {},
                         hidden_ids=hidden_ids,
+                        user_name_lookup=user_names,
+                        name_suppressed=name_suppressed,
                     )
-                    result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+                    result = await sync_entity_snapshot(
+                        app, entity_index, entities, snapshot_generation, reason="deferred_hidden_sync"
+                    )
                     if entities:
                         _mark_snapshot_loaded(entity_index, True)
                     logger.info(
