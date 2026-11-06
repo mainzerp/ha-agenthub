@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import AgentConfigRepository, SettingsRepository
 from app.entity.matcher import MatchResult
+from app.entity.naming import entity_display_name
 from app.entity.visibility import filter_visible_results
 from app.llm.client import complete
 from app.models.agent import TaskContext
@@ -231,7 +232,7 @@ async def _sensor_facts(
         collected.append(
             {
                 "entity_id": result.entity_id,
-                "friendly_name": str(attrs.get("friendly_name") or result.entity_id),
+                "friendly_name": entity_display_name(entity_index, result.entity_id, attrs),
                 "state": state_text,
                 "unit": str(attrs.get("unit_of_measurement") or "").strip(),
             }

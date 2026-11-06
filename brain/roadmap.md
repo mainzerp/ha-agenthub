@@ -41,6 +41,38 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Own entity names under HA 2026.11 naming · priority: P1 · area: entity-resolution
+  Outcome: an entity the owner named is matched, listed and spoken by its own
+  name when HA's `friendly_name` is exactly "device name + own name" (HA
+  2026.11, e.g. `_ Wohnzimmer` -> `Wohnzimmer`); integration names, main
+  entities, frozen and customize names keep HA's name; a collision guard keeps
+  HA's names when own names would clash in a domain; changed names delete the
+  entity's cache rows (`entity_name_changed`). Audit plan DEV-19, stage 1
+  (Decisions 2026-11-06, N1).
+  Review target: branch `feat/entity-own-names` (uncommitted working tree,
+  `container/app/entity/naming.py`). Passed: ruff, 56 new tests, container
+  suite 5483 passed / 0 failed; doc drift checks run and naming text fixed.
+  Not run: real HA 2026.11 payloads, dashboard in a browser.
+  Needs user verification: after deploy, Entity Index match preview for
+  "Wohnzimmer" shows `light.wohnzimmer` with name "Wohnzimmer" and HA's
+  `_ Wohnzimmer` underneath; a voice "Wohnzimmer aus" answers without a
+  device prefix; expect one batch of `entity_name_changed` cache deletions.
+- Own reasoning settings for mediation and merge · priority: P1 · area: llm
+  Outcome: `mediation.reasoning_effort` (mediation, localization) and
+  `mediation.merge_reasoning_effort` (multi-agent merge), seeded empty =
+  inherit the orchestrator (no change until set), allowed none/low/medium/
+  high, hot reload, effective value as `reasoning_effort` on every
+  `llm_provider_call` span; two dropdowns on the Personality page, which no
+  longer saves before it has loaded. Audit plan PERF-02 (merge split per owner).
+  Review target: branch `feat/mediation-reasoning` in worktree
+  `F:\Github\ha-agenthub-wt-mediation` (uncommitted). Passed: ruff, 32 new
+  tests, container suite 5458 passed / 0 failed; configuration.md drift check
+  found no issue in the new keys. Not run: real provider with `none`,
+  Personality page in a browser.
+  Needs user verification: set Mediation reasoning to none on the Personality
+  page, the next mediated voice turn shows `reasoning_effort` none on its
+  provider span without a restart, and the reply quality is unchanged.
+
 - Presence queries (who is home) · priority: P2 · area: agents
   Outcome: read-only `presence-agent` answers "Wer ist zu Hause?", "Wie viele
   sind im Haus?", "Ist Laura zu Hause?", "Wo ist Patric?" from `person.*`

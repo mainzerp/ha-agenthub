@@ -18,6 +18,7 @@ from app.agents.executor_state_check import failure_speech, is_redundant_action,
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 from app.entity.matcher import MatchResult
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible, filter_visible_results
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -464,10 +465,10 @@ async def execute_climate_action(
 # ---------------------------------------------------------------------------
 
 
-def _format_climate_state(entity_id: str, state_resp: dict) -> str:
+def _format_climate_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     if entity_id.startswith("sensor."):
         unit = attrs.get("unit_of_measurement", "")
@@ -572,7 +573,11 @@ async def _query_climate_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_climate_state(entity_id, state_resp)
+        speech = _format_climate_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -640,7 +645,7 @@ async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_inde
         lines = []
         for c in climate_entities:
             attrs = c.get("attributes", {})
-            name = attrs.get("friendly_name", c.get("entity_id", ""))
+            name = entity_display_name(entity_index, c.get("entity_id", ""), attrs)
             state = c.get("state", "unknown")
             current_temp = attrs.get("current_temperature")
             target_temp = attrs.get("temperature")
@@ -655,7 +660,7 @@ async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_inde
         lines = []
         for f in fan_entities:
             attrs = f.get("attributes", {})
-            name = attrs.get("friendly_name", f.get("entity_id", ""))
+            name = entity_display_name(entity_index, f.get("entity_id", ""), attrs)
             state = f.get("state", "unknown")
             percentage = attrs.get("percentage")
             info = f"{name}: {state}"
@@ -667,7 +672,7 @@ async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_inde
         lines = []
         for h in humidifier_entities:
             attrs = h.get("attributes", {})
-            name = attrs.get("friendly_name", h.get("entity_id", ""))
+            name = entity_display_name(entity_index, h.get("entity_id", ""), attrs)
             state = h.get("state", "unknown")
             target_humidity = attrs.get("humidity")
             info = f"{name}: {state}"
@@ -679,7 +684,7 @@ async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_inde
         lines = []
         for s in sensors:
             attrs = s.get("attributes", {})
-            name = attrs.get("friendly_name", s.get("entity_id", ""))
+            name = entity_display_name(entity_index, s.get("entity_id", ""), attrs)
             state = s.get("state", "unknown")
             unit = attrs.get("unit_of_measurement", "")
             lines.append(f"{name}: {state} {unit}".strip())
@@ -694,10 +699,10 @@ async def _list_climate(ha_client: Any, agent_id: str | None = None, entity_inde
 # ---------------------------------------------------------------------------
 
 
-def _format_weather_state(entity_id: str, state_resp: dict) -> str:
+def _format_weather_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     """Format a weather entity state into a human-readable summary."""
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
     condition = state_resp.get("state", "unknown")
 
     parts = [f"{friendly_name}: currently {condition}"]
@@ -901,7 +906,11 @@ async def _query_weather(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_weather_state(entity_id, state_resp)
+        speech = _format_weather_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,

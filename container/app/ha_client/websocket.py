@@ -7,6 +7,7 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
@@ -18,6 +19,38 @@ from app.security.sensitive_actions import enforce_sensitive_call_policy
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EntityRegistryInfo:
+    """What AgentHub keeps from one ``config/entity_registry/list`` response.
+
+    ``hidden_ids``: entities HA hides or disables. ``user_names``: entity_id ->
+    the user-set registry ``name`` (rows whose ``name`` is None or blank are
+    absent: integration-named and main entities).
+    """
+
+    hidden_ids: frozenset[str] = frozenset()
+    user_names: dict[str, str] = field(default_factory=dict)
+
+
+def parse_entity_registry_rows(rows: list[Any]) -> EntityRegistryInfo:
+    """Extract hidden/disabled ids and user-set names from registry list rows."""
+    hidden: set[str] = set()
+    user_names: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        eid = row.get("entity_id")
+        if not isinstance(eid, str) or not eid:
+            continue
+        if row.get("hidden_by") or row.get("disabled_by"):
+            hidden.add(eid)
+        name = row.get("name")
+        if isinstance(name, str) and name.strip():
+            user_names[eid] = name
+    return EntityRegistryInfo(hidden_ids=frozenset(hidden), user_names=user_names)
+
 
 BASE_DELAY = 1.0
 MAX_DELAY = 60.0
@@ -424,25 +457,32 @@ class HAWebSocketClient:
         )
         return None
 
+    async def get_entity_registry(self) -> EntityRegistryInfo | None:
+        """Read HA's entity registry (``config/entity_registry/list``) once.
+
+        Returns the hidden/disabled ids and the user-set entity names
+        (:func:`parse_entity_registry_rows`), or ``None`` when the query fails
+        or times out so callers can distinguish "fetch failed" from "empty".
+        """
+        result = await self.send_command("config/entity_registry/list")
+        if not isinstance(result, list):
+            return None
+        info = parse_entity_registry_rows(result)
+        self._logger.info(
+            "Fetched %d hidden/disabled entities and %d user-set entity names via WebSocket",
+            len(info.hidden_ids),
+            len(info.user_names),
+        )
+        return info
+
     async def get_hidden_entity_ids(self) -> set[str] | None:
         """Query HA's entity registry via WebSocket for hidden/disabled entities.
 
         Returns ``None`` when the registry query fails or times out so
         callers can distinguish "fetch failed" from "no hidden entities".
         """
-        result = await self.send_command("config/entity_registry/list")
-        if not isinstance(result, list):
-            return None
-        hidden: set[str] = set()
-        for row in result:
-            if not isinstance(row, dict):
-                continue
-            if row.get("hidden_by") or row.get("disabled_by"):
-                eid = row.get("entity_id")
-                if isinstance(eid, str) and eid:
-                    hidden.add(eid)
-        self._logger.info("Fetched %d hidden/disabled entities via WebSocket", len(hidden))
-        return hidden
+        info = await self.get_entity_registry()
+        return None if info is None else set(info.hidden_ids)
 
     async def call_service(
         self,

@@ -14,6 +14,7 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
 )
 from app.agents.executor_state_check import failure_speech, is_redundant_action, verification_previous_state
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -275,10 +276,10 @@ _SECURITY_DEVICE_CLASSES = frozenset(
 )
 
 
-def _format_security_state(entity_id: str, state_resp: dict) -> str:
+def _format_security_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     if entity_id.startswith("binary_sensor."):
         device_class = attrs.get("device_class", "")
@@ -353,7 +354,11 @@ async def _query_security_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_security_state(entity_id, state_resp)
+        speech = _format_security_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -463,7 +468,7 @@ async def _list_security(ha_client: Any, agent_id: str | None = None, entity_ind
         if entities:
             items = []
             for e in entities:
-                name = e.get("attributes", {}).get("friendly_name", e.get("entity_id", ""))
+                name = entity_display_name(entity_index, e.get("entity_id", ""), e.get("attributes"))
                 state = e.get("state", "unknown")
                 items.append(f"{name}: {state}")
             parts.append(f"{label}: {'; '.join(items)}")

@@ -19,7 +19,7 @@ from app.agents import (
     security_executor,
     vacuum_executor,
 )
-from app.bootstrap._entity import _snapshot_generation, build_entity_snapshot
+from app.bootstrap._entity import _snapshot_generation, build_entity_snapshot, sync_entity_snapshot
 from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
@@ -57,6 +57,14 @@ AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
 # Agents whose execute path runs `_resolve_light_entity` upstream; for
 # these the deterministic block's domain gate is the legacy light gate.
 _LIGHT_DETERMINISTIC_AGENTS: frozenset[str] = frozenset({"light-agent"})
+
+
+def _differing_ha_name(entry: Any) -> str | None:
+    """HA's friendly_name when it differs from the index name (own-name rule), else None."""
+    raw = getattr(entry, "ha_friendly_name", None)
+    if not isinstance(raw, str) or not raw:
+        return None
+    return raw if raw != getattr(entry, "friendly_name", None) else None
 
 
 def _count_allowed_domain_entries(
@@ -233,6 +241,7 @@ async def match_preview(
     deterministic: dict[str, Any] = {
         "entity_id": None,
         "friendly_name": query,
+        "ha_friendly_name": None,
         "speech": None,
         "metadata": {
             "query": query,
@@ -270,6 +279,11 @@ async def match_preview(
                 }
             )
             resolved_id = deterministic["entity_id"]
+            if isinstance(resolved_id, str) and resolved_id and hasattr(entity_index, "get_by_id"):
+                try:
+                    deterministic["ha_friendly_name"] = _differing_ha_name(entity_index.get_by_id(resolved_id))
+                except Exception:
+                    logger.debug("match-preview: index lookup failed for %s", resolved_id, exc_info=True)
             resolved_domain = (
                 resolved_id.split(".", 1)[0] if isinstance(resolved_id, str) and "." in resolved_id else ""
             )
@@ -321,6 +335,7 @@ async def match_preview(
                     {
                         "entity_id": entity_id,
                         "friendly_name": getattr(match, "friendly_name", "") or entity_id,
+                        "ha_friendly_name": _differing_ha_name(entry) if entry else None,
                         "domain": domain,
                         "area": getattr(entry, "area", None) if entry else None,
                         "score": round(float(getattr(match, "score", 0.0) or 0.0), 4),
@@ -435,7 +450,9 @@ async def refresh_entity_index(request: Request):
     try:
         snapshot_generation = _snapshot_generation(entity_index)
         entities = await build_entity_snapshot(request.app, ha_client)
-        result = await entity_index.sync_async(entities, snapshot_generation=snapshot_generation)
+        result = await sync_entity_snapshot(
+            request.app, entity_index, entities, snapshot_generation, reason="admin_refresh"
+        )
         counts = {key: result.get(key, 0) for key in ("added", "updated", "removed", "unchanged")}
         return {
             "status": "ok",

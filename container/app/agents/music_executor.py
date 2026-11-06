@@ -14,6 +14,7 @@ from app.agents.action_executor import (
 )
 from app.agents.executor_state_check import failure_speech, lacks_feature
 from app.agents.media_executor import normalize_volume_level
+from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.ha_client.rest import allow_internal_ha_service_calls
 from app.models.agent import TaskContext
@@ -459,10 +460,10 @@ async def execute_music_action(
 # ---------------------------------------------------------------------------
 
 
-def _format_music_player_state(entity_id: str, state_resp: dict) -> str:
+def _format_music_player_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     parts = [f"{friendly_name} is {state}"]
     if state in ("playing", "paused"):
@@ -527,7 +528,11 @@ async def _query_music_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_music_player_state(entity_id, state_resp)
+        speech = _format_music_player_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -574,7 +579,7 @@ async def _list_music_players(ha_client: Any, agent_id: str | None = None, entit
     lines = []
     for p in players:
         attrs = p.get("attributes", {})
-        name = attrs.get("friendly_name", p.get("entity_id", ""))
+        name = entity_display_name(entity_index, p.get("entity_id", ""), attrs)
         state = p.get("state", "unknown")
         info = f"{name}: {state}"
         if state in ("playing", "paused"):

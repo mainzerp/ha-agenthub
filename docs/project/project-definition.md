@@ -158,7 +158,7 @@ Built-in domain agents are responsible for their own execution. For actionable t
 
 #### Entity Index and Matching
 
-The container primes a persistent entity index from Home Assistant and keeps it fresh through WebSocket `state_changed` events plus a periodic background sync. Agents and executors use deterministic entity lookup first, then hybrid matching when needed. Visibility rules are applied as part of the resolution path.
+The container primes a persistent entity index from Home Assistant and keeps it fresh through WebSocket `state_changed` events plus a periodic background sync. Each entity is indexed under its own name: a user-named device entity drops the device-name prefix Home Assistant 2026.11 puts in its friendly name; every other entity keeps HA's friendly name (see [Architecture](../architecture.md#entity-names)). Agents and executors use deterministic entity lookup first, then hybrid matching when needed. Visibility rules are applied as part of the resolution path.
 
 #### Cache Layer
 

@@ -87,6 +87,9 @@ class EntityIndex:
 
         return {
             "friendly_name": entry.friendly_name,
+            # Audit only: not in content_hash, so an HA-only rename (same
+            # index name) does not rewrite the row.
+            "ha_friendly_name": entry.ha_friendly_name or "",
             "domain": entry.domain,
             "area": entry.area or "",
             "area_name": entry.area_name or "",
@@ -107,6 +110,18 @@ class EntityIndex:
             return None
         value = meta.get("content_hash")
         return value or None
+
+    @staticmethod
+    def _name_changed(meta: dict | None, entry: EntityIndexEntry) -> bool:
+        """True when a stored row names the entity differently than ``entry``.
+
+        Callers invalidate the entity's action-cache rows: their stored speech
+        still says the old name.
+        """
+        if not meta:
+            return False
+        stored = meta.get("friendly_name")
+        return isinstance(stored, str) and stored != entry.friendly_name
 
     @staticmethod
     def _entry_from_metadata(entity_id: str, meta: dict) -> EntityIndexEntry:
@@ -133,6 +148,8 @@ class EntityIndex:
         entry = EntityIndexEntry(
             entity_id=entity_id,
             friendly_name=meta.get("friendly_name", ""),
+            # Rows written before ha_friendly_name existed lack the key.
+            ha_friendly_name=meta.get("ha_friendly_name") or None,
             domain=meta.get("domain", ""),
             area=meta.get("area", "") or None,
             area_name=meta.get("area_name", "") or None,
@@ -377,7 +394,7 @@ class EntityIndex:
             entries.append((entry, distance))
         return entries
 
-    def add(self, entry: EntityIndexEntry) -> None:
+    def add(self, entry: EntityIndexEntry) -> bool:
         """Add or update a single entity.
 
         Skips the upsert when the stored ``content_hash`` already
@@ -385,8 +402,12 @@ class EntityIndex:
         identity is unchanged do not re-embed the row. Any error while
         reading current metadata falls through to the upsert (fail
         open -- never silently drop a write).
+
+        Returns True when a stored row existed under a different name
+        (``friendly_name``); the caller invalidates the entity's cache rows.
         """
         tokens = frozenset(entry_tokens(entry))
+        name_changed = False
         try:
             current = self._store.get(
                 COLLECTION_ENTITY_INDEX,
@@ -401,7 +422,8 @@ class EntityIndex:
                 # content_hash (identity fields) hasn't.
                 with self._primary_lock:
                     self._upsert_primary_locked(entry, tokens)
-                return
+                return False
+            name_changed = bool(ids and metas and self._name_changed(metas[0], entry))
         except Exception:
             logger.debug(
                 "add() pre-fetch failed for %s -- falling through to upsert",
@@ -416,6 +438,7 @@ class EntityIndex:
         )
         with self._primary_lock:
             self._upsert_primary_locked(entry, tokens)
+        return name_changed
 
     def remove(self, entity_id: str) -> None:
         """Remove an entity from the index."""
@@ -475,7 +498,9 @@ class EntityIndex:
         are: the older snapshot neither overwrites nor resurrects nor
         deletes them. When omitted, the generation at call time is used.
 
-        Returns dict with counts: added, updated, removed, unchanged.
+        Returns dict with counts: added, updated, removed, unchanged, plus
+        ``renamed`` (sorted ids whose stored ``friendly_name`` changed; absent
+        for an empty snapshot).
         """
         import time as _time
 
@@ -510,6 +535,7 @@ class EntityIndex:
                 stored_map[eid] = (current_docs[i], current_metas[i])
 
             to_upsert: list[EntityIndexEntry] = []
+            renamed: list[str] = []
             added = 0
             updated = 0
             unchanged = 0
@@ -523,6 +549,8 @@ class EntityIndex:
                     if new_doc != old_doc or entry.content_hash != self._stored_hash(old_meta):
                         to_upsert.append(entry)
                         updated += 1
+                        if self._name_changed(old_meta, entry):
+                            renamed.append(entity_id)
                     else:
                         unchanged += 1
                 else:
@@ -581,14 +609,23 @@ class EntityIndex:
             }
 
             logger.info(
-                "Entity sync complete: +%d ~%d -%d =%d (%dms)",
+                "Entity sync complete: +%d ~%d -%d =%d renamed=%d (%dms)",
                 added,
                 updated,
                 removed,
                 unchanged,
+                len(renamed),
                 elapsed_ms,
             )
-            return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
+            # ``renamed``: stored entities whose index name changed (HA rename,
+            # own-name rule, collision guard); callers invalidate their cache rows.
+            return {
+                "added": added,
+                "updated": updated,
+                "removed": removed,
+                "unchanged": unchanged,
+                "renamed": sorted(renamed),
+            }
 
         except Exception as exc:
             self._status["state"] = prev_state if prev_state != "syncing" else "ready"
@@ -615,10 +652,14 @@ class EntityIndex:
     # Batch add (used by async queue flush)
     # ------------------------------------------------------------------
 
-    def batch_add(self, entries: list[EntityIndexEntry]) -> None:
-        """Add or update multiple entities, skipping unchanged embedding text."""
+    def batch_add(self, entries: list[EntityIndexEntry]) -> list[str]:
+        """Add or update multiple entities, skipping unchanged embedding text.
+
+        Returns the sorted ids whose stored row carried a different name
+        (``friendly_name``); the caller invalidates their cache rows.
+        """
         if not entries:
-            return
+            return []
         seen: dict[str, EntityIndexEntry] = {}
         for e in entries:
             seen[e.entity_id] = e
@@ -645,6 +686,7 @@ class EntityIndex:
         to_upsert: list[EntityIndexEntry] = []
         meta_only_ids: list[str] = []
         meta_only_metas: list[dict] = []
+        renamed: list[str] = []
 
         for entry in deduped:
             if entry.entity_id in current_map:
@@ -654,6 +696,8 @@ class EntityIndex:
                 # is the dominant path for HA state_changed pushes.
                 if self._stored_hash(old_meta) == entry.content_hash:
                     continue
+                if self._name_changed(old_meta, entry):
+                    renamed.append(entry.entity_id)
                 new_doc = entry.embedding_text
                 new_meta = self._build_metadata(entry)
                 if new_doc == old_doc and new_meta == old_meta:
@@ -691,15 +735,16 @@ class EntityIndex:
         with self._primary_lock:
             for e in deduped:
                 self._upsert_primary_locked(e, tokens_by_id[e.entity_id])
+        return sorted(renamed)
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)
     # ------------------------------------------------------------------
 
-    async def add_async(self, entry: EntityIndexEntry) -> None:
-        """Async wrapper -- offloads add() to thread pool."""
+    async def add_async(self, entry: EntityIndexEntry) -> bool:
+        """Async wrapper -- offloads add() to thread pool; returns add()'s name-changed flag."""
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.add, entry)
+        return await loop.run_in_executor(None, self.add, entry)
 
     async def remove_async(self, entity_id: str) -> None:
         """Async wrapper -- offloads remove() to thread pool."""

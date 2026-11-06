@@ -36,6 +36,7 @@ from app.agents.executor_state_check import (
     verification_previous_state,
 )
 from app.db.repository import SettingsRepository
+from app.entity.naming import entity_display_name
 from app.entity.tokens import normalize_tokenize, token_in_query
 from app.entity.visibility import entity_is_visible
 from app.models.agent import TaskContext
@@ -831,9 +832,9 @@ def _rejects_media_type(error: Any) -> bool:
     return _INVALID_MEDIA_TYPE_MARKER in _error_text(error).lower()
 
 
-def _player_name(entity_id: str, state_resp: dict | None) -> str:
-    name = _attribute(state_resp, "friendly_name")
-    return str(name) if isinstance(name, str) and name.strip() else entity_id
+def _player_name(entity_id: str, state_resp: dict | None, entity_index: Any = None) -> str:
+    attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
+    return entity_display_name(entity_index, entity_id, attrs if isinstance(attrs, dict) else None)
 
 
 async def _stream_failure_hint(
@@ -859,7 +860,7 @@ async def _stream_failure_hint(
         return False, None
     rejected = _rejects_media_type(error)
     twins = await _usable_cast_twins(ha_client, identities, stream_id, entity_index, agent_id) if identities else []
-    names = sorted({_player_name(twin_id, state) for twin_id, state in twins})
+    names = sorted({_player_name(twin_id, state, entity_index) for twin_id, state in twins})
     if rejected and names:
         return True, (
             f"Sorry, {target_name} does not accept this stream format. Its Google Cast player "
@@ -1284,10 +1285,10 @@ async def _play_media_on_player(
 # ---------------------------------------------------------------------------
 
 
-def _format_media_state(entity_id: str, state_resp: dict) -> str:
+def _format_media_state(entity_id: str, state_resp: dict, *, name: str | None = None) -> str:
     state = state_resp.get("state", "unknown")
     attrs = state_resp.get("attributes", {})
-    friendly_name = attrs.get("friendly_name", entity_id)
+    friendly_name = name or attrs.get("friendly_name", entity_id)
 
     parts = [f"{friendly_name} is {state}"]
     if state in ("playing", "paused", "on"):
@@ -1352,7 +1353,11 @@ async def _query_media_state(
                 "cacheable": False,
                 "metadata": resolution_metadata,
             }
-        speech = _format_media_state(entity_id, state_resp)
+        speech = _format_media_state(
+            entity_id,
+            state_resp,
+            name=entity_display_name(entity_index, entity_id, state_resp.get("attributes")),
+        )
         return {
             "success": True,
             "entity_id": entity_id,
@@ -1398,7 +1403,7 @@ async def _list_media_players(ha_client: Any, agent_id: str | None = None, entit
     lines = []
     for p in players:
         attrs = p.get("attributes", {})
-        name = attrs.get("friendly_name", p.get("entity_id", ""))
+        name = entity_display_name(entity_index, p.get("entity_id", ""), attrs)
         state = p.get("state", "unknown")
         source = attrs.get("source")
         info = f"{name}: {state}"

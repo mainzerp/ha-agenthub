@@ -41,7 +41,7 @@ def test_store_entity_lookups_atomic_assignment():
         {"light.kitchen_ceiling": "kitchen"},
     )
     lookups = app.state.entity_lookups
-    assert set(lookups.keys()) == {"area", "alias", "device", "area_id"}
+    assert set(lookups.keys()) == {"area", "alias", "device", "area_id", "user_name", "name_suppressed"}
     assert lookups["area"] == {"kitchen": "Kitchen"}
     assert lookups["alias"] == {"light.kitchen_ceiling": ["main"]}
     assert lookups["device"] == {"light.kitchen_ceiling": "Kitchen Ceiling Device"}
@@ -67,7 +67,25 @@ def test_store_entity_lookups_handles_none_inputs():
         "alias": {},
         "device": {},
         "area_id": {},
+        "user_name": {},
+        "name_suppressed": frozenset(),
     }
+
+
+def test_store_entity_lookups_publishes_naming_inputs():
+    """User-set names and the collision suppression set ride along for incremental ingests."""
+    app = SimpleNamespace(state=SimpleNamespace())
+    _store_entity_lookups(
+        app,
+        {},
+        {},
+        {},
+        {},
+        user_name_lookup={"light.a": "Wohnzimmer"},
+        name_suppressed={"light.a"},
+    )
+    assert app.state.entity_lookups["user_name"] == {"light.a": "Wohnzimmer"}
+    assert app.state.entity_lookups["name_suppressed"] == frozenset({"light.a"})
 
 
 def test_state_to_entity_index_entry_area_id_lookup_overrides_missing_attrs():
