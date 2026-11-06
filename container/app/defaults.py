@@ -65,6 +65,18 @@ VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {
     "voice.speaker_id.audio_retention_days": (1, 365),
 }
 
+# Per-purpose reasoning effort of the mediation LLM calls. An empty stored value
+# means "inherit the orchestrator agent config"; the values match the per-agent
+# ``reasoning_effort`` choices of the dashboard agent editor.
+MEDIATION_REASONING_EFFORT_KEY = "mediation.reasoning_effort"
+MEDIATION_MERGE_REASONING_EFFORT_KEY = "mediation.merge_reasoning_effort"
+REASONING_EFFORT_VALUES: tuple[str, ...] = ("none", "low", "medium", "high")
+MEDIATION_REASONING_EFFORT_DESCRIPTION = (
+    "Reasoning effort of personality mediation and system-line localization calls "
+    "(empty = inherit the orchestrator config; none, low, medium or high)"
+)
+MEDIATION_MERGE_REASONING_EFFORT_DESCRIPTION = "Reasoning effort of the multi-agent merge call (empty = inherit the orchestrator config; none, low, medium or high)"
+
 # Setting descriptions of the voice-turn recording settings, shared by the
 # fresh-install seed and migration 53.
 VOICE_KEEP_AUDIO_DESCRIPTION = (

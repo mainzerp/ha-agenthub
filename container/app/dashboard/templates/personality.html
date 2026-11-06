@@ -38,8 +38,36 @@
             <span class="form-hint">Controls creativity of personality rephrasing. Lower = more accurate, higher = more creative. Default: 0.3</span>
         </div>
 
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label class="form-label">Mediation reasoning</label>
+                <select class="form-input" x-model="config.mediation_reasoning_effort">
+                    <option value="">Inherit (orchestrator)</option>
+                    <option value="none">none</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                </select>
+                <span class="form-hint">Reasoning effort of the personality rephrasing and of translated system lines. Inherit uses the orchestrator agent setting. Some models reject "none"; mediation then falls back to the unmediated text.</span>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Merge reasoning</label>
+                <select class="form-input" x-model="config.mediation_merge_reasoning_effort">
+                    <option value="">Inherit (orchestrator)</option>
+                    <option value="none">none</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                </select>
+                <span class="form-hint">Reasoning effort of the call that merges the answers of several agents into one reply. Inherit uses the orchestrator agent setting.</span>
+            </div>
+        </div>
+        <p class="form-hint text-amber" x-show="reasoningUnsupported()" x-cloak>
+            The mediation model (<span x-text="config.mediation_model"></span>) is not reported as a reasoning model; a reasoning setting is ignored or rejected by its provider.
+        </p>
+
         <div class="form-actions">
-            <button class="btn btn-primary" @click="saveConfig()">Save Changes</button>
+            <button class="btn btn-primary" @click="saveConfig()" :disabled="!loaded">Save Changes</button>
             <button class="btn btn-secondary" @click="clearPrompt()" x-show="config.prompt">Clear</button>
             <span x-show="saved" class="text-sage text-sm">Saved</span>
             <span x-show="error" class="text-coral text-sm" x-text="error"></span>
@@ -77,7 +105,7 @@
 
 
         <div class="form-actions">
-            <button class="btn btn-primary btn-sm" @click="saveConfig()">Save Changes</button>
+            <button class="btn btn-primary btn-sm" @click="saveConfig()" :disabled="!loaded">Save Changes</button>
         </div>
     </div>
 
@@ -96,25 +124,47 @@
 <script>
 function personalityPage() {
     return {
-        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 1000, filler_speculative_start: true },
+        config: {
+            prompt: "",
+            mediation_temperature: 0.3,
+            mediation_reasoning_effort: "",
+            mediation_merge_reasoning_effort: "",
+            mediation_model: "",
+            mediation_model_supports_reasoning: null,
+            filler_enabled: false,
+            filler_threshold_ms: 1000,
+            filler_speculative_start: true
+        },
+        // Save stays disabled until the stored config is loaded, so the
+        // placeholder defaults above can never overwrite the saved prompt.
+        loaded: false,
         saved: false,
         error: "",
         async loadConfig() {
             try {
                 this.config = await window.dashboardApi.json('/api/admin/personality/config');
+                this.loaded = true;
             } catch(e) {
                 if (e.code === 'auth_expired') return;
                 console.error("Failed to load personality config", e);
+                this.error = "Could not load the current configuration. Reload the page before saving.";
             }
         },
+        reasoningUnsupported() {
+            return this.config.mediation_model_supports_reasoning === false
+                && (this.config.mediation_reasoning_effort || this.config.mediation_merge_reasoning_effort);
+        },
         async saveConfig() {
+            if (!this.loaded) return;
             this.saved = false;
             this.error = "";
             try {
+                // mediation_model and mediation_model_supports_reasoning are read-only view fields.
+                var { mediation_model, mediation_model_supports_reasoning, ...payload } = this.config;
                 await window.dashboardApi.request('/api/admin/personality/config', {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(this.config)
+                    body: JSON.stringify(payload)
                 });
                 this.saved = true;
                 var self = this;

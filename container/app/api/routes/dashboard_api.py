@@ -32,6 +32,13 @@ from app.db.repository import (
     SettingsRepository,
     TraceSummaryRepository,
 )
+from app.defaults import (
+    MEDIATION_MERGE_REASONING_EFFORT_DESCRIPTION,
+    MEDIATION_MERGE_REASONING_EFFORT_KEY,
+    MEDIATION_REASONING_EFFORT_DESCRIPTION,
+    MEDIATION_REASONING_EFFORT_KEY,
+    REASONING_EFFORT_VALUES,
+)
 from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import StreamToken
 from app.runtime_setup import ensure_setup_runtime_initialized
@@ -124,6 +131,9 @@ class RewriteConfigUpdate(BaseModel):
 class PersonalityConfigUpdate(BaseModel):
     prompt: str | None = None
     mediation_temperature: float | None = None
+    # "" = inherit the orchestrator agent config.
+    mediation_reasoning_effort: str | None = None
+    mediation_merge_reasoning_effort: str | None = None
     filler_enabled: bool | None = None
     filler_threshold_ms: int | None = None
     filler_speculative_start: bool | None = None
@@ -624,17 +634,46 @@ async def update_rewrite_config(payload: RewriteConfigUpdate) -> dict[str, Any]:
 # --- Personality config ---
 
 
+async def _mediation_model_supports_reasoning() -> tuple[str, bool | None]:
+    """Effective mediation model and whether litellm reports it as a reasoning model.
+
+    ``mediation.model`` empty means the orchestrator agent config model.
+    Returns ``("", None)`` when no model is known or the lookup fails.
+    """
+    model = (await SettingsRepository.get_value("mediation.model", "") or "").strip()
+    if not model:
+        config = await AgentConfigRepository.get("orchestrator")
+        model = ((config or {}).get("model") or "").strip()
+    if not model:
+        return "", None
+    try:
+        import litellm
+
+        # litellm resolves the model from its in-memory catalog; keep it off the event loop anyway.
+        return model, bool(await asyncio.to_thread(litellm.supports_reasoning, model))
+    except Exception:
+        logger.debug("Reasoning support lookup failed for model %s", model, exc_info=True)
+        return model, None
+
+
 @router.get("/personality/config")
 async def get_personality_config() -> dict[str, Any]:
-    """Get current personality prompt, mediation temperature, and filler settings."""
+    """Get current personality prompt, mediation settings, and filler settings."""
     prompt = await SettingsRepository.get_value("personality.prompt", "")
     temperature = await SettingsRepository.get_value("mediation.temperature", "0.3")
+    reasoning_effort = await SettingsRepository.get_value(MEDIATION_REASONING_EFFORT_KEY, "")
+    merge_reasoning_effort = await SettingsRepository.get_value(MEDIATION_MERGE_REASONING_EFFORT_KEY, "")
     filler_enabled = await SettingsRepository.get_value("filler.enabled", "false")
     filler_threshold_ms = await SettingsRepository.get_value("filler.threshold_ms", "1000")
     filler_speculative_start = await SettingsRepository.get_value("filler.speculative_start", "true")
+    model, supports_reasoning = await _mediation_model_supports_reasoning()
     return {
         "prompt": prompt,
         "mediation_temperature": float(temperature or "0.3"),
+        "mediation_reasoning_effort": reasoning_effort or "",
+        "mediation_merge_reasoning_effort": merge_reasoning_effort or "",
+        "mediation_model": model,
+        "mediation_model_supports_reasoning": supports_reasoning,
         "filler_enabled": (filler_enabled or "false") == "true",
         "filler_threshold_ms": int(filler_threshold_ms or "1000"),
         "filler_speculative_start": (filler_speculative_start or "true") == "true",
@@ -643,7 +682,28 @@ async def get_personality_config() -> dict[str, Any]:
 
 @router.put("/personality/config")
 async def update_personality_config(payload: PersonalityConfigUpdate) -> dict[str, Any]:
-    """Save personality prompt, mediation temperature, and filler settings."""
+    """Save personality prompt, mediation settings, and filler settings."""
+    reasoning_updates: list[tuple[str, str, str]] = []
+    for key, raw, description in (
+        (
+            MEDIATION_REASONING_EFFORT_KEY,
+            payload.mediation_reasoning_effort,
+            MEDIATION_REASONING_EFFORT_DESCRIPTION,
+        ),
+        (
+            MEDIATION_MERGE_REASONING_EFFORT_KEY,
+            payload.mediation_merge_reasoning_effort,
+            MEDIATION_MERGE_REASONING_EFFORT_DESCRIPTION,
+        ),
+    ):
+        if raw is None:
+            continue
+        value = raw.strip().lower()
+        if value and value not in REASONING_EFFORT_VALUES:
+            raise_api_error(
+                f"Invalid reasoning effort '{raw}': expected empty or one of {', '.join(REASONING_EFFORT_VALUES)}"
+            )
+        reasoning_updates.append((key, value, description))
     if payload.prompt is not None:
         await SettingsRepository.set(
             "personality.prompt",
@@ -660,6 +720,8 @@ async def update_personality_config(payload: PersonalityConfigUpdate) -> dict[st
             "mediation",
             "Temperature for personality mediation LLM calls",
         )
+    for key, value, description in reasoning_updates:
+        await SettingsRepository.set(key, value, "string", "mediation", description)
     if payload.filler_enabled is not None:
         await SettingsRepository.set(
             "filler.enabled",

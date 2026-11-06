@@ -172,6 +172,7 @@ The **Personality** page at `/dashboard/personality` configures the personality 
 - Set a **personality prompt** to give the assistant a consistent tone.
 - When the personality prompt is non-empty, final responses are run through the mediation pipeline. Action-cache hits are always rephrased by the rewrite agent, which applies the personality prompt when one is set.
 - Tune mediation model and temperature settings.
+- Optionally set **Mediation reasoning** (personality rephrasing and translated system lines) and **Merge reasoning** (combining several agent replies) independently of the orchestrator; the default **Inherit** keeps the orchestrator setting. See [Configuration](configuration.md#mediation-settings).
 
 The personality prompt affects all final spoken responses.
 
