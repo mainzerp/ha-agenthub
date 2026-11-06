@@ -6,17 +6,22 @@ HA-AgentHub uses three configuration tiers:
 
 1. **Environment Variables** -- Infrastructure-only settings required to start the container process. Set in `docker-compose.yml` or a `.env` file.
 2. **Setup Wizard** -- One-time configuration for secrets and connections (admin password, HA URL/token, API key, LLM keys). Stored encrypted in SQLite.
-3. **Admin Dashboard** -- All runtime settings managed through the web UI at `/dashboard/`. Stored in SQLite and hot-reloadable without restart.
+3. **Admin Dashboard** -- All runtime settings managed through the web UI at `/dashboard/`. Stored in SQLite. Most apply without a restart; the groups read only at startup are listed under [Reload Behavior](#reload-behavior).
 
 ## Environment Variables
 
-These are the only settings that use environment variables. All other configuration is stored in SQLite.
+These are the only settings that use environment variables. All other configuration is stored in SQLite. Environment variables are read at process start; changing one needs a container restart.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `CONTAINER_HOST` | `0.0.0.0` | Listen address passed to uvicorn by the image `CMD`. Also a `Settings` field in `app/config.py`, which the app code does not read. |
+| `CONTAINER_PORT` | `8080` | Listen port passed to uvicorn by the image `CMD`; also used by the compose port mapping and the healthcheck. |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `LOG_DIR` | `/data/logs` | Directory for the persistent rotating file logs: `app.log` (container log records) and `warnings.jsonl` (WARNING+ log-buffer entries, restored into the buffer at startup). |
-| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path used by sqlite-vec entity-index data. |
+| `LOG_DIR` | `/data/logs` | Directory for the persistent rotating file logs: `app.log` (container log records) and `warnings.jsonl` (WARNING+ log-buffer entries, restored into the buffer at startup). Read directly with `os.environ`, not through `app/config.py`; the local compose file does not pass it. |
+| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Legacy path name. Holds the sqlite-vec entity-vector database (`entity_vectors.db`) and the routing/action cache database (`cache.db`). |
+| `HF_HOME` | `/data/hf_cache` | Hugging Face cache directory (set in the Dockerfile). |
+| `HF_HUB_OFFLINE` | `0` | Passed through by both compose files to the Hugging Face libraries. |
+| `HA_AGENTHUB_TAG` | `latest` | Compose-only variable: image tag of `ghcr.io/mainzerp/ha-agenthub`. |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database file path. |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Path to the Fernet encryption key. Backup target. |
 | `MIGRATION_BACKUP` | `true` | Before applying pending schema migrations to an existing database, write a `VACUUM INTO` snapshot to `backups/` next to the database file (newest 3 kept); startup aborts if the snapshot fails. `false` migrates without a snapshot. See [Backup and Restore](backup-restore.md#automatic-pre-migration-snapshots). |
@@ -26,11 +31,22 @@ These are the only settings that use environment variables. All other configurat
 | `ENABLE_API_DOCS` | `false` | Serve FastAPI's interactive API docs and schema at `/docs`, `/redoc`, and `/openapi.json`. Disabled by default so the API schema is not publicly exposed. |
 | `TRUSTED_PROXIES` | `""` | Comma-separated list of trusted reverse-proxy IPs or CIDR networks (for example `172.18.0.0/16`) for correct client-IP extraction from `X-Forwarded-For`. Invalid entries are logged and ignored. |
 
-Environment variables are loaded by Pydantic `BaseSettings` in `app/config.py` and support `.env` file loading.
+Except `LOG_DIR`, `HF_*` and the compose-only variable, these are loaded by Pydantic `BaseSettings` in `app/config.py`, which supports `.env` file loading.
+
+Docker build arguments (Dockerfile): `EMBEDDING_MODEL` (default `intfloat/multilingual-e5-base`), `SPEAKER_MODEL_URL`, `SPEAKER_MODEL_SHA256`, `VAD_MODEL_URL` and `VAD_MODEL_SHA256` select and verify the models baked into the image.
 
 ## SQLite Settings Reference
 
-All runtime settings are stored in the `settings` table, organized by category. These are managed through the admin dashboard and seeded with defaults on first startup.
+All runtime settings are stored in the `settings` table, organized by category. These are managed through the admin dashboard and seeded with defaults on first startup. `PUT /api/admin/settings` and `PUT /api/admin/settings/{key}` accept only keys that already exist in the table (unknown keys return HTTP 400), so a key marked "not seeded" below cannot be set through the API. Settings stored with `value_type` `number` (`cache.validator.interval_minutes`, `embedding.keepalive_interval_minutes`, `entity_sync.interval_minutes`, `filler.threshold_ms`, `mediation.temperature`, `mediation.max_tokens`) are not type-checked by the API; the `Type` column below shows the intended type.
+
+### Reload Behavior
+
+A settings write drops the cached value of that key (reads are otherwise cached for 60 seconds), so a key read per use applies on its next use.
+
+- **Read per use (no restart):** `cache.validator.*`, `cache.compound_utterance_bypass`, `memory.*`, `filler.*`, `entity_matching.expansion.*`, `approval.*`, `wake_briefing.*`, `calendar.reminder_injection.enabled` and `.lookahead_hours`, `language`, `home.*`, `voice.speaker_id.*`, `general.conversation_context_turns`, `orchestrator.organic_followup_*`, `orchestrator.mediation_streaming_enabled`, `media.stream_prefer_cast`, `communication.ws_reconnect_interval` (read at each reconnect). `entity_sync.interval_minutes` and `embedding.keepalive_interval_minutes` are re-read each loop iteration, so a change applies after the current sleep. `alarm_monitor.label` applies after the monitor's 300 s label cache expires.
+- **Reloaded on write:** `mediation.model`, `mediation.temperature`, `mediation.max_tokens` and both mediation reasoning keys; `voice.speaker_id.enabled` (engine warm-up) and `voice.speaker_id.num_threads` (model reload); LLM provider parameters.
+- **Read only at startup (restart required):** `cache.enabled`, `cache.routing.*`, `cache.action.*`, `cache.lru.*`; `entity_matching.confidence_threshold`, `entity_matching.top_n_candidates`, `entity_matching.log_misses`, `entity_matching.token_preselection.*` and the `entity_matching_config` weights; `a2a.default_timeout` and `a2a.max_dispatch_timeout`; the `embedding.*` model settings. The per-agent dispatch timeout is cached per agent and cleared only at startup and when custom agents reload.
+- **Cached 300 s:** the orchestrator reads `personality.prompt` through a 300 s cache that a write does not invalidate. A change reaches the orchestrator's mediation within five minutes; other readers (filler, rewrite) see it on their next use.
 
 ### Cache Settings
 
@@ -50,8 +66,10 @@ The export and import API surface uses the `action` tier name.
 | `cache.action.enabled` | `true` | bool | Enable the action cache tier |
 | `cache.action.semantic_threshold` | `0.95` | float | Legacy threshold setting; the action cache uses exact SHA-256 hash match lookup. This value is retained for backward compatibility. |
 | `cache.action.max_entries` | `50000` | int | Maximum action cache entries (LRU eviction) |
-| `cache.lru.trigger_fraction` | `0.95` | float | Early-eviction trigger fraction of `max_entries` |
-| `cache.lru.eviction_interval` | `100` | int | Operations between LRU eviction sweeps |
+| `cache.lru.trigger_fraction` | `0.95` | float | Early-eviction trigger fraction of `max_entries` (seeded by migration 24) |
+| `cache.lru.eviction_interval` | `100` | int | Operations between LRU eviction sweeps (seeded by migration 24) |
+
+`cache.enabled`, `cache.routing.*`, `cache.action.*` and `cache.lru.*` are read once at startup; a change needs a container restart. `cache.compound_utterance_bypass` and `cache.validator.*` apply without a restart.
 
 ### Cache Validator Settings
 
@@ -59,21 +77,22 @@ The export and import API surface uses the `action` tier name.
 |-----|---------|------|-------------|
 | `cache.validator.enabled` | `true` | bool | Enable periodic action-cache validation |
 | `cache.validator.interval_minutes` | `60` | int | Minutes between validation scans (`0` = disabled) |
-| `cache.validator.model` | (empty) | string | LLM model for cache validator response regeneration in the row's stored language (empty = English template for English rows; non-English rows needing a correction are deleted) |
-| `cache.validator.temperature` | `0.2` | float | Temperature for cache validator LLM regeneration |
+| `cache.validator.model` | (empty) | string | LLM model for the validator. Non-empty enables LLM consistency validation (single-entry and batch) and response regeneration in the row's stored language. Empty = rule-based validation only, and the English template for regeneration of English rows; non-English rows needing a correction are deleted |
+| `cache.validator.temperature` | `0.2` | float | Temperature of the validator LLM calls. Consistency checks cap it at 0.2; regeneration uses the value as stored |
 | `cache.validator.reasoning_effort` | `low` | string | Reasoning effort for cache validator LLM calls (`none`, `low`, `medium`, `high`) |
-| `cache.validator.max_tokens` | `1024` | int | Max tokens for cache validator LLM regeneration |
-| `cache.validator.batch_size` | `10` | int | Number of cache entries to validate in a single LLM batch call |
+| `cache.validator.max_tokens` | `1024` | int | Max tokens for response regeneration. The single-entry consistency check reads the same key with a code fallback of 32; the batch check ignores it and uses 16 tokens per entry |
+| `cache.validator.batch_size` | `10` | int | Number of cache entries to validate in a single LLM batch call; clamped to 1-50 |
 | `cache.validator.audit_retention_days` | `90` | int | Days to retain per-entry validator audit records (`0` = keep forever) |
 
 ### Embedding Settings
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `embedding.provider` | `local` | string | Embedding provider: `local` or `external` |
+| `embedding.provider` | `local` | string | Embedding provider. `local` uses `embedding.local_model`; any other value (the seed description lists `openrouter`, `groq`, `anthropic`, `ollama`, `custom_openai`) uses `embedding.external_model` through litellm. The value is not validated |
 | `embedding.local_model` | `intfloat/multilingual-e5-base` | string | Local embedding model name |
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
-| `embedding.dimension` | `768` | int | Embedding vector dimension |
+| `embedding.dimension` | `768` | int | Embedding vector dimension; the session-memory service uses it as a fallback when the engine reports none |
+| `embedding.keepalive_interval_minutes` | `15` | number | Interval of a dummy encode that keeps the local embedding model warm; `0` disables it (rechecked every 300 s). Values below 6 are ineffective (embedding cache TTL is 300 s). No effect for external providers |
 
 Changing the embedding model requires a container restart; the entity index and session memory are re-embedded automatically. Routing-cache vectors are tagged with the model that produced them: vectors from a previous model are dropped when the semantic tier encounters them, and each entry is re-embedded on its next exact hit. A failed embedding-engine initialization is retried after a 30 s cooldown; until then embedding callers fail fast (the routing cache degrades to exact-hash only).
 
@@ -105,16 +124,21 @@ embedding cost.
 | `entity_matching.expansion.ttl_seconds` | `2592000` | int | Query synonym cache TTL in seconds (default 30 days) |
 | `entity_matching.expansion.max_cache_rows` | `5000` | int | Query synonym cache LRU cap |
 | `entity_matching.log_misses` | `true` | bool | Emit structured matcher-miss diagnostics |
+| `entity_matching.token_preselection.enabled` | `true` | bool | Enable token-based candidate preselection |
+| `entity_matching.token_preselection.max_df_ratio` | `0.5` | float | Ignore query tokens appearing in more than this fraction of indexed entities |
+| `entity_matching.token_preselection.max_candidates` | `20` | int | Maximum candidates added by token preselection |
+
+`entity_matching.expansion.*` apply without a restart. `confidence_threshold`, `top_n_candidates`, `log_misses`, `token_preselection.*` and the signal weights (see [Entity Matching Configuration](#entity-matching-configuration)) are read once at startup; a change needs a container restart.
 
 ### Rewrite Agent Settings
 
-The rewrite agent runs on every action-cache hit. It rephrases the raw
+The rewrite agent (seeded disabled) runs on every action-cache hit while it is enabled. It rephrases the raw
 agent response in the turn language and applies `personality.prompt`
 (see [Personality](#personality-settings)) when one is set. Model,
 timeout, temperature, `max_tokens`, and reasoning effort come from the
 `rewrite-agent` row in [Agent Configuration](#agent-configuration)
-(dashboard **Agents** page). Seeded defaults: `groq/llama-3.1-8b-instant`,
-timeout `2` s, temperature `0.8`, reasoning effort `none`.
+(dashboard **Agents** page). Seeded defaults: disabled, `groq/llama-3.1-8b-instant`,
+timeout `2` s, temperature `0.5`, `max_tokens` `1024`, reasoning effort `none`.
 
 If the rewrite is disabled, or the call fails, times out, or returns no
 text, the stored original agent speech of the cache entry (the
@@ -143,17 +167,17 @@ relevant route before tuning.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `communication.streaming_mode` | `websocket` | string | Streaming mode: `websocket`, `sse`, or `none` |
-| `communication.ws_reconnect_interval` | `5` | int | WebSocket reconnect interval in seconds |
-| `communication.stream_buffer_size` | `1` | int | Token batching buffer size |
+| `communication.ws_reconnect_interval` | `5` | int | Upper bound in seconds of the exponential reconnect backoff of the Home Assistant WebSocket client (read at each reconnect) |
+| `communication.stream_buffer_size` | `1` | int | Currently has no effect: seeded, but no code reads it |
 
 ### A2A Settings
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `a2a.default_timeout` | `10` | int | Default agent timeout in seconds. Seeded database default is `10`; code fallback if the DB setting is absent is `5`. |
-| `a2a.max_iterations` | `3` | int | Reserved; not read at runtime (no effect) |
-| `a2a.max_dispatch_timeout` | `60` | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. |
-| `agent.dispatch_timeout.<agent_id>` | (unset) | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. |
+| `a2a.default_timeout` | `10` | int | Default agent timeout in seconds. Seeded database default is `10`; code fallback if the DB setting is absent is `5`. Read once at startup. |
+| `a2a.max_iterations` | `3` | int | Currently has no effect: seeded, but no code reads it |
+| `a2a.max_dispatch_timeout` | not seeded | int | Hard upper bound (seconds) on a single A2A dispatch, regardless of per-agent overrides. Code fallback `60`. Not seeded, so the settings API rejects it; it takes effect only if a row exists in the `settings` table. Read once at startup. |
+| `agent.dispatch_timeout.<agent_id>` | not seeded | int | Per-agent dispatch timeout override; falls back to the agent's `AgentCard.timeout_sec` and then to `a2a.default_timeout`. Capped by `a2a.max_dispatch_timeout`. Not seeded, so the settings API rejects it; it takes effect only if a row exists in the `settings` table. The resolved value is cached per agent until restart or custom-agent reload. |
 
 ### Entity Sync Settings
 
@@ -246,9 +270,24 @@ allowlist.
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `general.conversation_context_turns` | `3` | int | Number of prior conversation turns retained for recent runtime context; honored by the orchestrator and clamped to `1..20` |
-| `agents.actionable.primary_text_source` | `original_when_translated` | string | Primary user message for actionable agents: `original_when_translated` or `description_first` |
+| `agents.actionable.primary_text_source` | `original_when_translated` | string | Currently has no effect: seeded (`original_when_translated` or `description_first`), but no code reads it |
 | `orchestrator.organic_followup_enabled` | `false` | bool | Offer a follow-up prompt after successful voice responses |
 | `orchestrator.organic_followup_probability` | `0.08` | float | Probability (0.0-1.0) of appending a follow-up offer to successful responses |
+
+### Other Settings Keys
+
+| Key | Default | Seeded | Description |
+|-----|---------|--------|-------------|
+| `ha_url` | (empty) | yes | Home Assistant base URL (http/https); set by the setup wizard, read by the REST and WebSocket clients. |
+| `ollama_base_url` | `http://localhost:11434` (code fallback) | no | Ollama API URL; written by the setup wizard and the Ollama provider endpoint. |
+| `custom_openai_provider.name`, `.base_url`, `.headers` | (empty) | yes (migration 33) | Custom OpenAI-compatible provider: display name, base URL and extra headers (JSON, default `{}`). |
+| `notification.profile` | JSON, created at startup when absent | at startup | Notification profile for timers and alarms (`PUT /api/admin/notification-profile`). Fields: `tts_enabled`, `tts_engine`, `persistent_enabled`, `push_enabled`, `push_targets`, `voice_followup_enabled`, `tts_to_listen_delay`, `chime_enabled`, `chime_url`, `ring_sounds_enabled`, `sound_base_url` (the last three under [Home Assistant helper alarms](#home-assistant-helper-alarms)). |
+| `orchestrator.voice_followup_delay` | (unset) | no | Overrides the profile's `tts_to_listen_delay` (seconds) for voice follow-ups. Not settable through the API. |
+| `tts.engine` | `tts.google_translate_say` (code fallback) | no | TTS entity used by `send-agent` for TTS delivery. Not settable through the API. |
+| `state_verify.ws_timeout_sec` | `1.5` (code fallback) | no | Seconds the action executor waits for the state-change event after a service call. Not settable through the API. |
+| `state_verify.poll_interval_sec` | `0.25` (code fallback) | no | Poll interval of the state verification fallback. Not settable through the API. |
+| `state_verify.poll_max_sec` | `1.0` (code fallback) | no | Maximum polling time of the state verification fallback. Not settable through the API. |
+| `entity_index.schema_version`, `entity_index.embedding_model` | (internal) | no | Runtime state written by the entity-index bootstrap; do not edit. |
 
 ## Agent Configuration
 
@@ -256,20 +295,33 @@ Each agent has per-agent settings stored in the `agent_configs` table:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `1` | Whether the agent is active |
+| `enabled` | `1` (column default; seeded rows differ, see below) | Whether the agent is active |
 | `model` | Varies per agent | LLM model identifier (e.g., `groq/llama-3.1-8b-instant`, `openrouter/openai/gpt-4o-mini`) |
-| `timeout` | `5` | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call. Transient provider errors (rate limit, overload, 5xx) are retried once on every agent when the call's time budget allows it, without a setting ([Architecture](architecture.md#dispatch-failures-and-timeouts)) |
+| `timeout` | `5` (column default) | Per-call LLM provider timeout in seconds. Non-domain agents retry once after a timeout when the dispatch budget still allows it; domain agents never retry a timed-out call. Transient provider errors (rate limit, overload, 5xx) are retried once on every agent when the call's time budget allows it, without a setting ([Architecture](architecture.md#dispatch-failures-and-timeouts)) |
 | `max_iterations` | `3` | Maximum LLM-to-tool rounds in an MCP tool-calling loop (general and custom agents); afterwards the agent is forced to answer without tools |
-| `temperature` | `0.2` | LLM sampling temperature |
-| `max_tokens` | `1024` | Maximum tokens per LLM response |
+| `temperature` | `0.2` (column default) | LLM sampling temperature |
+| `max_tokens` | `1024` (column default) | Maximum tokens per LLM response |
 | `reasoning_effort` | (empty); `none` for `rewrite-agent` | Reasoning-effort hint: empty (dashboard "Default") sends no parameter; `none`, `low`, `medium`, or `high` is sent as `reasoning_effort` with `drop_params=True`, so litellm drops it for models it does not list as reasoning-capable. Reasoning models that do not accept the value (for example `none` on gpt-oss or gpt-5) can reject the call. |
 
 > **Model recommendation:** For **routable agents**, use `openai/gpt-oss-120b` and set `reasoning_effort` to `Low`. For **filler and rewrite agents**, use `llama-3.1-8b-instant`.
 
-Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
-`timer-agent`, `climate-agent`, `media-agent`, `scene-agent`,
-`automation-agent`, `security-agent`, `general-agent`, `send-agent`
-(delivers messages to phones, satellites, and notification targets).
+Seeded `agent_configs` rows (timeout in seconds / temperature / `max_tokens`):
+
+| Agent | Seeded | Model | Timeout / temperature / max tokens |
+|-------|--------|-------|------------------------------------|
+| `orchestrator` | enabled | `groq/llama-3.1-8b-instant` | 10 / 0.3 / 4096 |
+| `light-agent`, `music-agent` | enabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.2 / 2048 |
+| `general-agent` | enabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.5 / 2048 |
+| `wake-briefing-composer` | enabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.5 / 2048 |
+| `filler-agent` | enabled | (none) | 3 / 0.7 / 1024 |
+| `timer-agent`, `calendar-agent`, `climate-agent`, `media-agent`, `cover-agent`, `vacuum-agent`, `scene-agent`, `automation-agent`, `security-agent`, `lists-agent` | disabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.2 / 2048 |
+| `send-agent` | disabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.2 / 512 |
+| `presence-agent` | disabled | `openrouter/openai/gpt-4o-mini` | 5 / 0.2 / 2048 |
+| `rewrite-agent` | disabled | `groq/llama-3.1-8b-instant` | 2 / 0.5 / 1024 |
+| `vision-agent`, `task-formatter` | enabled | see [AI task helper models](#ai-task-helper-models) | see there |
+
+Enable the agents you want routable on the Agents page. `send-agent` delivers
+messages to phones, satellites, and notification targets.
 
 `presence-agent` (who is home, read-only) is seeded disabled because it reads
 personal location data; enable it on the Agents page. Its default visibility
@@ -309,6 +361,7 @@ security sentinel work.
 - If a briefing source fails or times out, the remaining sources still
   compose. If the overall composition fails, the system falls back to
   the plain alarm message.
+- The wake-briefing admin endpoints validate `news_count` (1-10), `timeout_seconds` (1-60) and require a non-empty `composer_prompt`.
 - `wake_briefing.sensor_entities` must use `domain.object_id` values.
   Visibility rules still apply, so hidden entities are skipped.
 
@@ -368,18 +421,19 @@ profile (`PUT /api/admin/notification-profile`) controls them:
 | `chime_url` | `media-source://media_source/local/notification.mp3` | Media-player fallback chime. Left at the default it is replaced by the ring sound; any other value is played as given. |
 
 Internal helper agents (`filler-agent`, `rewrite-agent`,
-`mediation`, `notification-dispatcher`, `cancel-speech`,
-`language-detect`, `sanitize`, `alarm-monitor`)
-participate in the pipeline but are not user-routable
-intent targets and are not listed in the dashboard's intent-routing
-configuration.
+`wake-briefing-composer`) participate in the pipeline but are not
+user-routable intent targets and are not listed in the dashboard's
+intent-routing configuration. `notification-dispatcher` is only the LLM
+agent id of the timer/alarm TTS message call; it has no `agent_configs` row.
+`cancel-interaction` and `noise` are pipeline directives of the classifier,
+not agents.
 
 ### Calendar Settings
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `calendar.reminder_injection.enabled` | `true` | bool | Enable proactive calendar reminder injection into orchestrator responses |
-| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Reminder offset markers in minutes; per event only the closest applicable offset fires, once |
+| `calendar.reminder_injection.offsets` | `[1440, 60, 15]` | json | Currently has no effect on reminders: only `GET/POST /api/admin/calendar/settings` reads and writes it. The injector uses each user mapping's own offsets, or `[15, 60, 1440]` when no user matches; per event only the closest applicable offset fires, once |
 | `calendar.reminder_injection.lookahead_hours` | `24` | int | How many hours ahead to look for upcoming calendar events |
 
 ### Media Agent Settings
@@ -420,18 +474,18 @@ tool arguments are not mapped to entities (see the MCP section below).
 
 ## Entity Matching Configuration
 
-Entity matching signal weights are stored in the `entity_matching_config` table and can be adjusted from the admin dashboard (the embedding signal was removed; a stale `weight.embedding` row is deleted by schema migration 42):
+Entity matching signal weights are stored in the `entity_matching_config` table and can be adjusted from the admin dashboard; the weights are read once at startup, so a change needs a container restart (the embedding signal was removed; a stale `weight.embedding` row is deleted by schema migration 42):
 
 - **Levenshtein distance** -- Fuzzy string matching
 - **Jaro-Winkler similarity** -- String similarity favoring prefix matches
 - **Phonetic matching** -- Soundex/Metaphone for sound-alike names
 - **Alias lookup** -- Exact match from the aliases table
 
-Aliases are managed in the `aliases` table and can be created/deleted from the admin dashboard. Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`. Optional user aliases from `/data/entity_aliases.yaml` are written to the same table during the entity-index prime, and the alias cache is reloaded afterwards. A query that equals an alias (after the shared folding) is an exact deterministic match; visibility rules and the executor's allowed domains still apply.
+Aliases live in the `aliases` table; there is no dashboard alias editor. Home Assistant voice aliases are not read today (see [Architecture](architecture.md#entity-names) for the limitation). Example: alias "nightstand lamp" resolves to `light.bedroom_nightstand`. Optional user aliases from `/data/entity_aliases.yaml` are written to the same table during the entity-index prime, and the alias cache is reloaded afterwards. A query that equals an alias (after the shared folding) is an exact deterministic match; visibility rules and the executor's allowed domains still apply.
 
 ## Cache Configuration
 
-Cache thresholds and max entries are managed as SQLite settings (see Cache Settings above). Changes take effect immediately without restart.
+Cache thresholds and max entries are managed as SQLite settings (see Cache Settings above). The cache tier settings (`cache.enabled`, `cache.routing.*`, `cache.action.*`, `cache.lru.*`) are read once at startup and need a container restart; `cache.validator.*` and `cache.compound_utterance_bypass` apply without one (see [Reload Behavior](#reload-behavior)).
 
 The routing cache and action cache use separate SQLite tables. Each entry stores the SHA-256 hash key, metadata (agent ID, timestamp, hit count), and the cached decision or response.
 

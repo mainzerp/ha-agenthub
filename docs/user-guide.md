@@ -52,8 +52,10 @@ The **Operate** group contains the pages you will use most often to monitor and 
 The **System Overview** page at `/dashboard/` is the landing page. It shows:
 
 - **Primary metrics** -- requests, average latency, and cache hit rate for the current window; active agents, indexed entities, and conversations appear below. The page refreshes every 30 seconds and falls back to the last seven days when no recent data is available.
+- **Warnings** -- a banner appears when agent timeouts or rewrite failures occurred in the window.
 - **Health badges** -- a quick color-coded summary of subsystem health.
-- **Request-trend chart** -- requests over the selected window.
+- **Agent Activity** -- a live activity orb for the agents currently working.
+- **Request-trend chart** -- requests over the last 24 hours (seven days in the fallback).
 - **Agent-distribution chart** -- horizontal bars compare request counts by agent.
 - **Cache-tier chart** -- a stacked bar shows routing hits, action hits, and misses.
 - **Recent activity table** -- the latest requests, agents, and latency; **View all** opens Request Traces.
@@ -67,9 +69,9 @@ The **Chat** page at `/dashboard/chat` lets you send test commands directly to t
 - Choose a sample prompt to fill and focus an empty composer, or type your own command. Suggestions preserve existing drafts and never send a request.
 - Review the command and press **Send**.
 - Watch the streamed response appear in the chat panel.
-- Click **Clear** to reset the conversation.
+- Click **Clear** to reset the conversation. Filler phrases are shown as separate "Filler" bubbles.
 
-**Tip:** If a command fails to match the right entity, use the Entity Index page to add an alias or tune matching weights, then test again here.
+**Tip:** If a command fails to match the right entity, use the Entity Index page to preview the match, give the entity a clearer name in Home Assistant, or tune the matching weights under **Settings > Entity Matching**, then test again here.
 
 ### System Health
 
@@ -77,7 +79,7 @@ The **Chat** page at `/dashboard/chat` lets you send test commands directly to t
 
 The **System Health** page at `/dashboard/system-health` displays one card per subsystem and refreshes automatically every 15 seconds:
 
-- HA Connection
+- Home Assistant
 - Entity Index
 - Cache System
 - MCP Servers
@@ -93,13 +95,13 @@ Each card uses a color to indicate status. Green means healthy; yellow means war
 The **Analytics** page at `/dashboard/analytics` provides deeper operational metrics:
 
 - **Time-range selector** -- choose from 1 hour to 30 days.
-- **Request metrics** -- total, successful, and failed requests.
-- **Latency percentiles** -- p50, p95, p99.
-- **Cache performance** -- hits, misses, and hit rates per tier.
-- **Error breakdown** -- errors grouped by type and agent.
-- **Per-agent performance** -- requests handled by each agent.
-- **Token usage** -- average whole-call latency, plus time-to-first-token (TTFT) and tokens-per-second (TPS) for streaming calls.
-- **Rewrite stats** -- how often cached responses were rewritten for variety.
+- **Summary cards** -- total requests, average latency, cache hit rate, and conversations.
+- **Requests over time** -- a chart of requests in the selected range.
+- **Cache tier breakdown** -- a chart of hits and misses per tier.
+- **Errors by type** -- shown only when errors occurred in the range.
+- **Per-agent performance** -- requests, average latency, and p50, p95, p99 latency per agent.
+- **Token usage by agent** -- input tokens, output tokens, and calls.
+- **Rewrite stats** -- total rewrites, average latency, successes, and failures.
 
 Use this page to identify trends, measure the impact of a settings change, or decide whether an LLM provider is too slow.
 
@@ -116,7 +118,7 @@ Trace detail starts with the request summary and input/response panels. The summ
 
 Expand routing/communication, agent executions, or the complete trace record for diagnostic payloads. In agent communication, **Conversation history** shows the live session turns passed to an agent. Cache tier, hit type, skipped-span details, and unknown metadata remain reachable. Missing state or memory context is shown neutrally; recorded errors remain explicit.
 
-Cache metadata includes the numeric tier (0 = miss, 1 = routing hit, 2 = routing + entity binding, 3 = action replay), hit type, and skipped-span information when the routing cache supplied entity binding (`source: routing_cache`).
+Cache metadata includes the numeric tier (0 = miss, 1 = routing hit, 3 = action replay), the hit type, and skipped-span information.
 
 Trace previews and stored summaries are sanitized before persistence; secrets, tokens, and short verification codes are redacted.
 
@@ -156,11 +158,10 @@ The **Custom Agents** page at `/dashboard/custom-agents` lets you create LLM-pow
 - **Name** -- normalized to a lowercase slug; the runtime ID becomes `custom-{name}`.
 - **System prompt** -- the agent's instructions.
 - **Model** -- optional LLM model override: pick a provider and a model from the same dropdown as the Agents page, or leave the provider on **Default** to use the general agent's model.
-- **MCP tools** -- tools from registered MCP servers that the agent can use.
+- **MCP tools** -- tools from registered MCP servers that the agent can use, entered as a JSON array. On the **Agents** page, **Edit** assigns whole connected MCP servers to an agent.
 - **Intent patterns** -- phrases that help the orchestrator decide when to route to this agent.
-- **Entity visibility rules** -- which entities the agent can see.
 
-After saving, enable or disable the agent from the **Agents** page if needed.
+Each custom agent also has an **Enabled** switch in its edit form. The page has no entity visibility field; visibility rules are described under [Entity Index](#entity-index).
 
 ### Personality
 
@@ -170,23 +171,28 @@ The **Personality** page at `/dashboard/personality` configures the personality 
 
 - Set a **personality prompt** to give the assistant a consistent tone.
 - When the personality prompt is non-empty, final responses are run through the mediation pipeline. Action-cache hits are always rephrased by the rewrite agent, which applies the personality prompt when one is set.
-- Tune mediation model and temperature settings.
+- Tune the mediation temperature. The mediation model is the orchestrator agent's model unless `mediation.model` is set (not on the dashboard).
+- Configure **Filler / Interim / Cancel Responses**: enable filler phrases, the delay before one is spoken, and speculative start.
 - Optionally set **Mediation reasoning** (personality rephrasing and translated system lines) and **Merge reasoning** (combining several agent replies) independently of the orchestrator; the default **Inherit** keeps the orchestrator setting. See [Configuration](configuration.md#mediation-settings).
 
 The personality prompt affects all final spoken responses.
 
 ### Entity Index
 
-![Entity Index page showing index status and alias management](screenshots/11_entity_index.png)
+![Entity Index page showing index status and match preview](screenshots/11_entity_index.png)
 
-The **Entity Index** page at `/dashboard/entity-index` manages how Home Assistant entities are indexed and matched:
+The **Entity Index** page at `/dashboard/entity-index` shows how Home Assistant entities are indexed and matched:
 
-- **Index status** -- shows the number of indexed entities, last refresh time, and per-domain breakdown.
-- **Refresh** -- trigger a manual refresh from HA (`POST /api/admin/entity-index/refresh`).
-- **Aliases** -- create aliases such as "nightstand lamp" that map to `light.bedroom_nightstand`.
-- **Matching signal weights** -- adjust the weights for Levenshtein, Jaro-Winkler, phonetic, and alias signals.
-- **Per-agent visibility rules** -- control which entities each agent can see.
-- **Match preview** -- shows the name each candidate is matched by; when it differs from Home Assistant's friendly name, the friendly name is shown underneath.
+- **Index status** -- the number of indexed entities, number of domains, last refresh time, last sync (duration, changes, countdown to the next sync) and the embedding provider, model and state.
+- **Refresh** -- **Refresh from HA** triggers a manual refresh (`POST /api/admin/entity-index/refresh`).
+- **Match preview** -- type a phrase, optionally pick an agent and domain, and see the entity the resolver picks, the ranked candidates, and the agent's visibility rules. Each candidate shows the name it is matched by; when it differs from Home Assistant's friendly name, the friendly name is shown underneath.
+- **Domain Agent Mapping** and **Device Class Agent Mapping** -- choose which agents handle which entity domains and device classes.
+
+Where the rest lives:
+
+- **Aliases** -- the page does not edit aliases. Matching uses the optional user file `/data/entity_aliases.yaml`; an alias that equals the phrase is an exact match. Note: aliases set in Home Assistant are not read by AgentHub yet (planned fix); aliases in `/data/entity_aliases.yaml` are used when an agent resolves a free-form name, but not yet when it builds its candidate list.
+- **Matching signal weights** -- Levenshtein, Jaro-Winkler, phonetic and alias weights are under **Settings > Entity Matching**.
+- **Per-agent visibility rules** -- the dashboard shows each agent's rules as badges on the **Agents** page and in Match Preview but cannot edit them. Rules are read only through `GET` and replaced as a whole list only through `PUT /api/admin/entity-visibility/{agent_id}` (see the [API reference](api-reference.md)).
 
 Use this page when commands match the wrong device or no device at all.
 
@@ -203,7 +209,7 @@ The **MCP Servers** page at `/dashboard/mcp-servers` registers external tool ser
 - **Environment variables** -- key-value pairs passed to the subprocess.
 - **Timeout** -- connection timeout in seconds.
 
-After a server is connected, its discovered tools can be assigned to specific agents on the **Agents** or **Custom Agents** pages.
+After a server is connected, assign it to an agent with **Edit** on the **Agents** page, or list its tools in a custom agent's **MCP tools**. Each server row has a **Tools** button that lists the discovered tools.
 
 ### Plugins
 
@@ -211,8 +217,8 @@ After a server is connected, its discovered tools can be assigned to specific ag
 
 The **Plugins** page at `/dashboard/plugins` lists Python plugins found in `container/plugins/`:
 
-- Enable or disable each plugin.
-- Edit plugin-specific settings if the plugin exposes them.
+- Enable or disable each plugin; each card shows its description, version, file, load time, and a Loaded, Error or Disabled badge.
+- The page has no plugin settings editor. Plugin settings are read and written by the plugin itself (see [Plugin Development](plugin-development.md)). Plugin files are discovered at container start.
 
 Plugins run in-process and can add routes, subscribe to events, dispatch work through the orchestrator, and read or write settings. One plugin failing does not affect others.
 
@@ -228,15 +234,15 @@ The **Send Devices** page at `/dashboard/send-devices` maps notification targets
 
 - The display name is found inside your phrasing ("send Laura Handy the shopping list"), ignoring case, accents, and punctuation. Names in any script (for example Cyrillic or Greek) work. Only the display name is matched, not aliases.
 - If one device name is part of another ("Laura" and "Laura Handy"), the longer name wins. If the request names two different devices ("send a message from Patric to Anna"), nothing is sent; the same applies to two devices whose names match equally well, so give each device a distinct name.
-- A dictated message ("send Anna the message: I am running late") is delivered verbatim.
+- A dictated message ("send Anna the message: I am running late") keeps your wording, but is formatted for the channel: a phone notification has markdown removed, and a satellite announcement is condensed to a few sentences and names the sender when known. A phone mapping can also be linked to a person (**Linked Person**).
 
 ### Timers
 
 ![Timers page for managing alarms and wake briefing](screenshots/15_timers.png)
 
-The **Timers** page at `/dashboard/timers` manages timers and alarms created through the timer agent. You can:
+The **Timers** page at `/dashboard/timers` lists the timers and alarms created through the timer agent and refreshes every 5 seconds. Timers and alarms are created by voice or chat, not on this page. You can:
 
-- Create, edit, or delete timers and alarms.
+- Edit or cancel timers and alarms.
 - Review the **History** section: timers and alarms of the last 30 days that rang, were missed (container was down) or were cancelled. Older entries are removed automatically.
 - Configure the **Wake Briefing** card to compose a spoken morning briefing for internal alarms. The briefing can include weather, news, calendar events, date/time, and selected sensor states.
 
@@ -251,13 +257,13 @@ Timer and alarm behavior by voice or chat:
 - **After a restart.** Timers and alarms that came due while AgentHub was down do not ring late: they are reported once, together, as missed (within one minute of the due time they still ring). A missed recurring alarm keeps its series. Delayed device actions run if at most 5 minutes late and are otherwise dropped and logged.
 - **Language.** Announcements are generated in the configured language; fixed fallback texts are translated through the rewrite agent, with English as the last resort.
 
-**Optional: alarm times kept in Home Assistant.** Timers and alarms set by voice, chat or the Timers page run entirely in the container and need no HA helpers. Only if you keep wake-up times in HA `input_datetime` helpers and want AgentHub to announce them, add the HA label `agenthub_alarm` (setting `alarm_monitor.label`) to those helpers in **Settings > Devices & services > Helpers**; they must also be visible to the timer agent. Helpers without the label (for example automation schedule helpers) never ring. With the default visibility rules nothing else is needed; if you restricted the `timer-agent` visibility rules, keep the `input_datetime` domain (or the helper itself) allowed, and `assist_satellite` for spoken announcements on satellites. If you do not use HA helper alarms, set `alarm_monitor.label` to empty to turn the alarm monitor off.
+**Optional: alarm times kept in Home Assistant.** Timers and alarms set by voice or chat run entirely in the container and need no HA helpers. Only if you keep wake-up times in HA `input_datetime` helpers and want AgentHub to announce them, add the HA label `agenthub_alarm` (setting `alarm_monitor.label`) to those helpers in **Settings > Devices & services > Helpers**; they must also be visible to the timer agent. Helpers without the label (for example automation schedule helpers) never ring. With the default visibility rules nothing else is needed; if you restricted the `timer-agent` visibility rules, keep the `input_datetime` domain (or the helper itself) allowed, and `assist_satellite` for spoken announcements on satellites. If you do not use HA helper alarms, set `alarm_monitor.label` to empty to turn the alarm monitor off.
 
 ### Calendar
 
 ![Calendar page showing events and reminder settings](screenshots/16_calendar.png)
 
-The **Calendar** page at `/dashboard/calendar` shows calendar events and configures proactive reminder injection. The orchestrator can include upcoming calendar reminders in its replies when `calendar.reminder_injection.enabled` is true. You can also add calendar users and events directly from this page.
+The **Calendar** page at `/dashboard/calendar` shows calendar events and configures proactive reminder injection. The orchestrator can include upcoming calendar reminders in its replies when `calendar.reminder_injection.enabled` is true. The page has tabs for **User Mappings** (add or delete calendar users), **Calendars** (**Sync from HA**, per-calendar settings), **Events** (load and delete events of a calendar and date range; events are created by voice or chat, not on this page), **Settings** (reminder injection) and **Reminder State** (**Clear All**).
 
 Calendar behavior in conversation:
 
@@ -270,7 +276,7 @@ Calendar behavior in conversation:
 
 ![Persons page showing HA person-entity mapping](screenshots/17_persons.png)
 
-The **Persons** page at `/dashboard/persons` maps Home Assistant person entities. This mapping helps agents resolve references to people ("tell John", "when Sarah gets home") by linking the person name to the corresponding HA `person.*` entity. Questions about who is home are answered by the presence agent (see [Common Workflows](#common-workflows)).
+The **Persons** page at `/dashboard/persons` lists the Home Assistant `person.*` entities (name, entity id, state, linked user id, device trackers, location) and the Open WebUI users mapped to them. Agents use these entities to resolve references to people ("tell John", "when Sarah gets home"). Questions about who is home are answered by the presence agent (see [Common Workflows](#common-workflows)).
 
 When a request carries a Home Assistant user (Companion App, the Assist dialog in Home Assistant, a mapped Open WebUI user), the person linked to that user (the person's **User** setting in Home Assistant) names the requesting user: the general agent and the timer agent know the name ("who am I?", a personal greeting, a reminder label), a personality reply may address the user by name, and a sent message is titled "Message from <name>". This name wins over a recognized voice. A user without a linked person stays unnamed. The name is wording only and never changes what the user may see or control; an answer that names the user is never replayed from the cache to someone else: cached answers keep only the agent's own reply (never the personality reply), and commands handled by the general or timer agent (or another agent that knows the name) are not stored as cached answers, only their routing. A renamed or relinked person is picked up on the next request; otherwise the name list is refreshed every 5 minutes in the background.
 
@@ -321,8 +327,8 @@ Privacy: voice embeddings and voice recordings are biometric data. Embeddings ar
 
 The **Cache** page at `/dashboard/cache` inspects the two-tier cache:
 
-- **Routing cache** -- exact-hash cache of intent-to-agent routing decisions.
-- **Action cache** -- exact-hash cache of full agent responses.
+- **Routing cache** -- cache of intent-to-agent routing decisions; an exact match or, when enabled, a semantic match above the threshold.
+- **Action cache** -- cache of full agent responses; exact match, with a semantic threshold in Settings.
 
 From this page you can:
 
@@ -341,16 +347,16 @@ Clearing the cache is useful when behavior feels stale or an entity has changed 
 The **Settings** page at `/dashboard/settings` is a unified editor for advanced runtime settings stored in SQLite. Choose a category in the left navigation; on narrow screens the category navigation sits above the form. Provider credentials and test/save controls remain in their category. Categories include:
 
 - **LLM** -- provider keys and the custom OpenAI-compatible endpoint. **Test** lists the provider's models (no tokens are used) and reports how many are available, or the error reason such as an invalid key or an unreachable endpoint. For a custom endpoint that cannot list models, enter a **Test model** to test with one tiny completion instead.
-- **Cache** -- enable/disable tiers, thresholds, max entries, LRU behavior, and validator configuration. The validator model dropdown uses the same live provider model list, fallback defaults, **Custom model...** entry, and stale-model warning as the Agents page.
-- **Embedding** -- local or external embedding provider and model.
-- **Entity Matching** -- confidence threshold, top-N candidates, and expansion settings.
-- **Communication** -- WebSocket reconnect interval and stream buffer size.
-- **A2A** -- default agent timeout, max iterations, and max dispatch timeout.
-- **Filler** -- enable interim TTS filler phrases and set the threshold delay.
-- **Mediation** -- model, temperature, and max tokens for the mediation pass; toggle mediation streaming.
-- **Language** -- pin a language (`en`, `de`, `fr`, ...) or leave `auto` for per-turn detection.
-- **Home Context** -- timezone override and friendly home name.
-- **Wake Briefing** -- sources, sensors, timeout, and composer prompt.
+- **Embedding** -- local or external embedding provider, model and dimension.
+- **Entity Matching** -- confidence threshold, top-N candidates, and the signal weights (Levenshtein, Jaro-Winkler, phonetic, alias).
+- **Cache** -- enable/disable the cache, the routing and action tiers (semantic tier and thresholds, max entries), compound-utterance bypass, and the validator configuration. The validator model dropdown uses the same live provider model list, fallback defaults, **Custom model...** entry, and stale-model warning as the Agents page.
+- **Communication** -- the Home Assistant URL and token, the container API key for the integration, streaming mode, WebSocket reconnect interval and stream buffer size.
+- **Agents** -- A2A default timeout and max iterations.
+- **Home Context** -- conversation context turns and the language: pin one (`en`, `de`, `fr`, ...) or leave `auto` for per-turn detection.
+- **Orchestrator** -- organic follow-up (enable and probability) and mediation streaming.
+- **Memory** -- session memory: enable, scope, wait mode and timeout, similarity threshold, and match, snippet and continuation limits.
+
+A search box above the categories filters the settings. Settings that live elsewhere: filler phrases and mediation temperature and reasoning on **Personality**; the wake briefing on **Timers**. The timezone override and home name (`home.timezone`, `home.location_name`) and `mediation.model` have no dashboard field; see [Configuration](configuration.md).
 
 Most settings take effect immediately; a few (such as embedding provider changes) may require an entity-index refresh.
 
@@ -374,28 +380,28 @@ These short procedures link the dashboard pages described above.
    - Open the request link, select a span in the timeline, and inspect its timing and diagnostic payloads.
 
 4. **Add an alias for a device**
-   - Go to **Entity Index** (`/dashboard/entity-index`).
-   - Find the entity and add an alias such as "bedroom light".
-   - Save the alias and test the command in **Chat**.
+   - Add the alias to `/data/entity_aliases.yaml`. Aliases set in Home Assistant are not read by AgentHub yet.
+   - Click **Refresh from HA** on **Entity Index** (`/dashboard/entity-index`).
+   - Use Match Preview to check the match and test the command in **Chat**.
 
 5. **Tune entity matching when the wrong device is selected**
-   - Adjust the signal weights on **Entity Index** (`/dashboard/entity-index`).
-   - Click **Refresh** to rebuild the index.
+   - Use Match Preview on **Entity Index** (`/dashboard/entity-index`) to see the ranked candidates.
+   - Adjust the signal weights under **Settings > Entity Matching** (`/dashboard/settings`).
    - Re-test the command in **Chat**.
 
 6. **Create a custom agent**
    - Open **Custom Agents** (`/dashboard/custom-agents`).
    - Set name, system prompt, and model.
    - Add MCP tools and define intent patterns.
-   - Save the agent, then enable it on the **Agents** page if needed.
+   - Save the agent; use its **Enabled** switch to turn it on or off.
 
 7. **Register an MCP server and assign tools**
    - Add the server in **MCP Servers** (`/dashboard/mcp-servers`).
    - Wait for tool discovery to complete.
-   - Map the discovered tools to the desired agent(s) on the **Agents** or **Custom Agents** page.
+   - Assign the server to the desired agent(s) with **Edit** on the **Agents** page, or list its tools in a custom agent's **MCP tools**.
 
 8. **Set or cancel a timer or alarm**
-   - Use **Timers** (`/dashboard/timers`) to create, edit, or delete timers and alarms.
+   - Ask by voice or chat to create a timer or alarm; use **Timers** (`/dashboard/timers`) to edit or cancel one.
    - For internal alarms, configure the **Wake Briefing** card to add a spoken briefing.
 
 9. **Clear the cache when behavior seems stale**
@@ -404,15 +410,15 @@ These short procedures link the dashboard pages described above.
    - Test the command again to confirm the fresh response.
 
 10. **Change runtime language or filler/mediation settings**
-    - Open **Settings** (`/dashboard/settings`).
-    - Edit the **Language**, **Filler**, or **Mediation** sections.
+    - Language: open **Settings** (`/dashboard/settings`) and edit **Home Context**.
+    - Filler and mediation temperature or reasoning: open **Personality** (`/dashboard/personality`). Mediation streaming is under **Settings > Orchestrator**.
     - Save and test in **Chat**.
 
 11. **Create, change, or delete an automation by voice or chat**
     - Ask for the change (for example "create an automation that turns on the living room light at sunset").
     - The automation agent describes the change and asks "Shall I save this?" (or "Shall I delete it?"). Nothing is written yet.
     - Answer within 5 minutes in the same conversation: a clear yes saves it, a no discards it, and a different instruction replaces the proposal. A late answer is told that the proposal expired.
-    - Every referenced entity must exist in the entity index and be visible to the automation agent, and only common device services are allowed; otherwise the agent names what it rejected. Device, area, floor, and label targets are not supported. The default visibility rules limit the automation agent to the `automation` domain, so add include rules on the **Agents** page for the domains your automations should control (for example `light`).
+    - Every referenced entity must exist in the entity index and be visible to the automation agent, and only common device services are allowed; otherwise the agent names what it rejected. Device, area, floor, and label targets are not supported. The default visibility rules limit the automation agent to the `automation` domain, so add include rules for the domains your automations should control (for example `light`) with `PUT /api/admin/entity-visibility/automation-agent`; the dashboard cannot edit rules (see [Entity Index](#entity-index)).
     - Changes to an existing automation are applied as a patch to its current configuration; if the automation was edited in Home Assistant before you confirmed, nothing is saved.
     - Enabling, disabling, and triggering an automation still happen immediately.
 
@@ -495,7 +501,7 @@ response_variable: door_check
 - When a player answers `Invalid media type`, the answer says it does not accept the stream format and names the Cast player of the same device, or says that a Cast player would work if none was found.
 - The agent refuses instead of trying when Home Assistant reports that the target is unavailable, is an audio-only speaker (device class `speaker`), or cannot play media (no `PLAY_MEDIA` feature), or that the camera offers no stream. When `camera.play_stream` itself fails, the answer names the usual causes.
 - A camera stream is never replayed from the action cache.
-- Cameras are visible to the media agent by default (visibility rule `domain_include camera` for `media-agent`). To keep cameras off screens, add a `domain_exclude camera` rule (or narrower entity rules) for the media agent on the **Agents** page.
+- Cameras are visible to the media agent by default (visibility rule `domain_include camera` for `media-agent`). To keep cameras off screens, add a `domain_exclude camera` rule (or narrower entity rules) for the media agent with `PUT /api/admin/entity-visibility/media-agent`; the dashboard cannot edit rules (see [Entity Index](#entity-index)).
 
 "Play `http://example.com/clip.mp4` on the kitchen display" plays a URL or a `media-source://` item with `media_player.play_media` after the same target checks (the speaker check applies to video and image content only).
 
@@ -560,8 +566,8 @@ Many common problems can be diagnosed without opening a terminal. The dashboard 
 | Problem | Dashboard page | What to look for |
 |---------|----------------|------------------|
 | Commands not working at all | **System Health** | HA Connection or Entity Index card status |
-| Wrong entity matched | **Entity Index** | Aliases, matching weights, visibility rules |
-| Slow responses | **Analytics** | Latency percentiles, cache hit rate, per-agent load |
+| Wrong entity matched | **Entity Index** | Match Preview candidates and visibility rules; weights under Settings > Entity Matching |
+| Slow responses | **Analytics** | Per-agent latency percentiles, cache hit rate, per-agent load |
 | A specific turn failed | **Request Traces** | Recorded errors, span timing, and inspector payloads |
 | Strange runtime errors | **Logs** | Error-level entries and recent exceptions |
 | Stale or incorrect responses | **Cache** | Cache hit rate, individual entries to delete |

@@ -32,7 +32,7 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 |  +----------------------------------------------+ |
 |  | API Layer (conversation, /v1 OpenAI, admin)  | |
 |  +----------------------------------------------+ |
-|  | Middleware (auth, tracing, setup redirect)    | |
+|  | Middleware (auth, tracing, CSRF, headers)     | |
 |  +---+------------------------------------------+ |
 |      |                                            |
 |  +---v---+   +----------+   +-----------+        |
@@ -43,7 +43,7 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 |  +---v-----------+   +----------+                 |
 |  | Two-Tier Cache|   | Entity   |                 |
 |  | (routing +    |   | Matcher  |                 |
-|  |  action)      |   | (5 sig.) |                 |
+|  |  action)      |   | (4 sig.) |                 |
 |  +---------------+   +----------+                 |
 |                                                   |
 |  +---------------+   +----------+  +----------+  |
@@ -64,8 +64,8 @@ All configuration, secrets, and state are stored in SQLite. sqlite-vec provides 
 Agents communicate via an in-process Agent-to-Agent (A2A) message boundary:
 
 - **Registry** -- Maintains agent cards describing each agent's ID, name, description, skills, and endpoint. The current implementation keeps the registry in `app/a2a/registry.py`, with agent cards and handler instances stored in-memory.
-- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`). `message/send` returns the raw agent result on success and raises a `RuntimeError` on failure: `A2ADispatchError` (with a JSON-RPC `code`) for an unknown method or invalid params, a transport `RuntimeError` for agent failures. Error messages are generic; validation details are only logged. `message/stream` reports the same failures as a single `done` chunk with an `error` string. The `agent/discover` and `agent/list` management methods return JSON-RPC envelopes.
-- **Transport** -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container (`app/a2a/transport.py`). The transport abstraction allows for future HTTP-based transport.
+- **Dispatcher** -- Routes A2A task dispatches to agents by card and intent (`app/a2a/dispatcher.py`). `message/send` returns the raw agent result on success and raises a `RuntimeError` on failure: `A2ADispatchError` (with a JSON-RPC `code`) for an unknown method or invalid params, a transport `RuntimeError` for agent failures (an agent timeout in `InProcessTransport.send` re-raises `TimeoutError` unchanged). Error messages are generic; validation details are only logged. `message/stream` reports the same failures as a single `done` chunk with an `error` string. The `agent/discover` and `agent/list` management methods return JSON-RPC envelopes.
+- **Transport** -- `InProcessTransport` invokes agent handlers directly with async function calls (`handler.handle_task`, `handler.handle_task_stream`) within the container (`app/a2a/transport.py`). The transport abstraction allows for future HTTP-based transport. Only handler classes in `_ALLOWED_INTERNAL_HA_SCOPE` run inside `allow_internal_ha_service_calls`, the scope that permits internal HA service calls.
 - **Default stream wrapper** -- Agents without token streaming yield one final chunk from `handle_task()`. It carries `speech`, `action_executed`, `voice_followup`, `directive`/`reason`, and, when set, `error` (the error code string, as in the non-streaming response), `metadata` and `actions_executed` (list of dicts).
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
@@ -126,16 +126,16 @@ route to them through the same dispatcher boundary as built-in agents.
 1. User speaks a command in Home Assistant (e.g., "turn on the bedroom light").
 2. The HA custom integration sends the text to the container via `POST /api/conversation` (or SSE/WebSocket).
 3. The API layer authenticates the request (Bearer token) and builds an A2A task dispatch targeting the orchestrator.
-4. **Orchestrator agent** receives the request:
-   a. Checks the **routing cache** -- if an identical request was recently routed, reuses the cached routing decision (exact SHA-256 hash match).
+4. **Orchestrator agent** receives the request. In the prelude it first checks the **action cache** (exact SHA-256 hash match); a valid hit replays the stored HA command and skips the rest (see [Two-Tier Cache](#two-tier-cache)). Otherwise:
+   a. Checks the **routing cache** -- if an identical request was recently routed, reuses the cached routing decision (exact SHA-256 hash match, or a semantic match).
    b. If cache miss, calls the LLM for **intent classification** to select the target agent.
    c. Condenses the task description, preserving entity names.
    d. Dispatches via A2A to the selected specialist agent.
 5. **Specialist agent** (e.g., light-agent) receives the task:
-   a. Uses the **entity matcher** to resolve "bedroom light" to `light.bedroom_main`.
+   a. Uses keyword recall and the deterministic resolver (see [Entity Matching](#entity-matching)) to resolve "bedroom light" to `light.bedroom_main`.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
    c. Verifies the resulting state (`call_service_with_verification` in `app/agents/action_executor.py`) and returns a response with speech text and action details.
-6. The orchestrator checks the **action cache** for an exact hash match and stores the new result on miss.
+6. After dispatch the orchestrator stores the new result in the **action cache** and the routing decision in the **routing cache**, unless the turn is not cacheable.
    Sensitive actions (unlock, alarm arm/disarm, opening a garage door, gate or door) are held for an explicit approval instead of running in step 5; see [Sensitive-Action Approval](#sensitive-action-approval).
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
 
@@ -807,9 +807,11 @@ number; the streaming filter never removes them.
 ### Language Detection and Per-Agent Directive
 
 The `language` setting (default `auto`) controls reply language.
-When `auto`, the `language_detect` agent resolves the per-turn
-language from the user input and the HA-provided `language` field,
-and the orchestrator injects an explicit
+When `auto`, the orchestrator detects the per-turn language from the
+user input (`detect_user_language` in `app/agents/language_detect.py`, a
+utility function, not an A2A agent), retries with the last user turns
+when the text is too short, and falls back to the HA-provided `language`
+field, then `en`. It injects an explicit
 "respond in <language>" directive into the system prompt of the
 downstream domain agent. Forcing an ISO code (`de`, `en`, ...)
 bypasses detection and pins all replies.
@@ -838,10 +840,14 @@ API returns it as `user_id`.
 
 Several hardening measures guard the WebSocket and A2A dispatch paths:
 
-- **WebSocket origin validation** -- The set `app.state.allowed_ws_origins`
-  controls acceptable WebSocket origins. An empty set rejects all origins.
+- **WebSocket origin validation** -- On `/ws/conversation` and `/ws/voice`
+  the set `app.state.allowed_ws_origins` controls acceptable origins. A
+  connection that sends an `Origin` header outside the set is rejected (an
+  empty set rejects every such origin); a connection without an `Origin`
+  header is not checked.
 - **Per-IP connection limits** -- WebSocket connections are capped per client
-  IP (5, rejected before the handshake completes), with hardened client-IP
+  IP (5 on `/ws/conversation`, 8 on `/ws/voice`; rejected before the
+  handshake completes), with hardened client-IP
   extraction that resists spoofed `X-Forwarded-For` values (`TRUSTED_PROXIES`
   accepts IPs and CIDR networks).
 - **Per-agent dispatch timeout overrides** -- Settings shaped as
@@ -850,10 +856,12 @@ Several hardening measures guard the WebSocket and A2A dispatch paths:
 
 ### Recorder-History Tool
 
-A recorder-history MCP tool exposes Home Assistant's long-term
-history queries to agents that need them (mostly the general agent).
-See `container/tests/test_recorder_history.py` for the tool's
-contract.
+The `recorder_history` / `entity_history` actions of the light, climate,
+cover, security and vacuum agents answer long-term history questions from
+Home Assistant's recorder through
+`app/ha_client/history_query.py::execute_recorder_history_query`. It is an
+agent action, not an MCP tool. See `container/tests/test_recorder_history.py`
+for the contract.
 
 ### Device Executors
 
@@ -963,9 +971,12 @@ Settings `approval.enabled` / `approval.allowlist_entities` (see
 
 ### Cancel-Intent / Dismiss
 
-The `cancel_speech` agent detects user requests to dismiss the
-current or previous response ("never mind", "stop") and short-
-circuits the dispatch so no downstream domain agent is invoked. See
+The classifier routes a request to dismiss the current or previous
+response ("never mind", "stop") to the `cancel-interaction` pseudo-agent.
+The orchestrator short-circuits the dispatch, so no domain agent is
+invoked, and answers with an acknowledgement line from
+`app/agents/cancel_speech.py` (an LLM line with a deterministic
+fallback). See
 `container/tests/test_cancel_interaction.py` for the interaction
 matrix.
 
@@ -1041,6 +1052,7 @@ By default, a weighted matcher score above 0.60 returns a confident match. Below
 - WebSocket `state_changed` and registry events update the index incrementally; a full sync runs at startup, every `entity_sync.interval_minutes`, and after every WebSocket reconnect (events emitted while the socket was down are lost).
 - The startup sync reads HA's hidden/disabled entity list (WebSocket-only entity registry) before the states snapshot, waiting up to 30 s for the WebSocket, so hidden entities are never searchable in the first snapshot. `state_changed` events are not indexed until the list or the first snapshot is in place. If the registry stays unreadable, the snapshot is installed unfiltered and the next sync applies the filter.
 - A full sync replaces the index with an HA snapshot but keeps entities that were updated or removed incrementally after the snapshot was taken (mutation generation read before fetching states), so it never resurrects removed entities or reverts newer names.
+- Known limitation: the HA alias lookup renders `state_attr(entity_id, 'aliases')`, which Home Assistant never sets (voice aliases live only in the entity registry), so HA aliases do not reach the index today; aliases from `/data/entity_aliases.yaml` are used by the exact-alias stage and the matcher, not by keyword recall.
 - Area, alias, device-name and entity-area registry lookups are fetched via `/api/template` and cached for 5 minutes. A failed lookup is not cached; the last good lookup stays in use. Every registry event (entity, device, area) clears this cache before refreshing the affected entities.
 - Until the entity-area lookup has succeeded once, area assignments are unknown: visibility fails closed for entities without an area under `area_exclude` rules.
 - **Satellite origin** -- the same syncs (plus every device and area registry event) refresh an in-memory device map (`app/ha_client/devices.py`: device id -> area id, device name). The orchestrator prelude applies it before cache replay and routing: a turn with `device_id` but no `area_id` gets the device's area, and missing `device_name` / `area_name` are filled. An explicit request `area_id` wins; there is no HA round trip per turn.
@@ -1076,8 +1088,9 @@ Plugins extend the system without modifying core code:
 
 - Plugins are Python files in `container/plugins/` discovered at startup.
 - Each plugin subclasses `BasePlugin` and implements lifecycle hooks: `configure`, `startup`, `ready`, `shutdown`.
-- The `PluginContext` provides a read-only agent catalog, A2A dispatcher access, MCP registry access, settings access, and restricted route helpers; the old direct registry and raw `app` escape hatches are removed.
-- Plugins can inspect registered agents, dispatch work through the orchestrator, add routes, subscribe to events via the event bus, and read/write settings.
+- The `PluginContext` provides `agent_registry` (the live `AgentRegistry`, including `register` and `unregister`), the A2A `dispatcher`, `mcp_registry`, `settings`, `event_bus`, and the route helpers `add_api_route` / `include_router`. `ctx.app` is removed and raises `AttributeError`.
+- Plugins can inspect registered agents, dispatch work through the orchestrator, add routes, subscribe to events via the event bus (pipeline events `pipeline.pre_classify`, `post_classify`, `pre_dispatch`, `post_dispatch`), and read/write settings.
+- `ctx.set_pipeline_strategy(phase, strategy)` replaces the orchestrator strategy for one phase: `cache_replay`, `classification`, `dispatch` or `finalization` (`app/agents/pipeline_strategies.py`; applied at startup by `OrchestratorAgent.apply_pipeline_strategies`).
 - Plugin failures are isolated -- one plugin crashing does not affect others.
 
 See [Plugin Development Guide](plugin-development.md) for details.

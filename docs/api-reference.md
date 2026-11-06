@@ -2,7 +2,7 @@
 
 ## Authentication
 
-All API endpoints (except the `/healthz` and `/readyz` probes and `/setup/*`) require authentication.
+All API endpoints require authentication except the `/healthz` and `/readyz` probes and `GET /setup/*`. `POST /setup/*` is anonymous only while the setup wizard is incomplete; afterwards it needs an admin session and the form CSRF token. While setup is incomplete, every HTTP request outside `/setup`, `/api/health`, `/healthz`, `/readyz` and the static prefixes is redirected (302) to `/setup/`.
 
 ### Conversation Endpoints
 
@@ -64,7 +64,7 @@ Returns container health status and the effective log level.
 
 ### GET /healthz
 
-Unauthenticated liveness probe used by the Docker/compose healthchecks. Returns `{"status": "ok", "probe": "liveness"}` once startup has completed, otherwise HTTP 503 with `"reason": "startup not complete"`. A readiness probe is available at `GET /readyz`.
+Unauthenticated liveness probe used by the Docker/compose healthchecks. Returns `{"status": "ok", "probe": "liveness"}` once startup has completed, otherwise HTTP 503 with `"reason": "startup not complete"`. `GET /readyz` returns `{"status": "ok", "probe": "readiness", "ready": true, "setup_complete": true}` once setup is complete, otherwise HTTP 503 with `ready: false`, `setup_complete: false` and `reason` `startup not complete` or `setup not initialized`.
 
 ---
 
@@ -98,7 +98,8 @@ Send a natural language command and receive a full response.
 | `area_id` | string | no | HA area id of the caller. When omitted, the container derives it (and missing `device_name` / `area_name`) from `device_id` via its synced HA device registry; an explicit value wins. |
 | `device_name` | string | no | Friendly device name (used by send-agent). |
 | `area_name` | string | no | Friendly area name (used for context and routing). |
-| `language` | string | no | Per-turn language override; falls back to the `language` setting (default `auto`). |
+| `user_id` | string | no | HA user id of the speaker (max 64 characters). |
+| `language` | string | no | Language hint, default `"en"` (max 10 characters). The effective turn language is the `language` setting when it is not `auto`, else auto-detection from the text (and recent turns), else this field. |
 
 **Response:**
 
@@ -115,6 +116,11 @@ Send a natural language command and receive a full response.
 | `speech` | string | Final speech text returned to the user. |
 | `conversation_id` | string | Conversation thread identifier. |
 | `voice_followup` | bool | When true, the HA integration is asked to keep the microphone open for an immediate follow-up turn. |
+| `action_executed` | object \| null | `{service, entity_id, result, service_data}` of the executed Home Assistant action. |
+| `routed_agent` | string \| null | Agent that handled the turn. |
+| `sanitized` | bool | Default `true`: the speech is already sanitised for TTS. |
+| `directive` | string \| null | Optional bridge routing directive. |
+| `reason` | string \| null | Timer-agent reason code paired with `directive`. |
 
 When dispatch fails, `speech` is a fixed generic message; the error detail is logged with the trace id (`X-Trace-Id` response header) and never returned. Validation errors (for example `text` over 500 characters) return `422`; the per-IP rate limit (30/minute) returns `429`.
 
@@ -147,6 +153,13 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 | `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
 | `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech. |
 | `filler_push` | string \| null | Interim filler sentence; the HA integration prepends it to the assistant message as an in-stream preamble. |
+| `directive` | string \| null | Bridge routing directive, terminal event only. |
+| `reason` | string \| null | Timer-agent reason code paired with `directive`, terminal event only. |
+| `action_executed` | object \| null | `{service, entity_id, result, service_data}`, terminal event only. |
+| `routed_agent` | string \| null | Agent that handled the turn, terminal event only. |
+| `status` | string \| null | Progress marker on non-terminal frames (multi-agent and sequential sends). |
+| `agents` | list of strings \| null | Agent ids involved, on non-terminal progress frames. |
+| `timings` | object \| null | `{first_frame_ms, total_ms}` on the terminal event of `/api/conversation/stream` and `/ws/conversation`. |
 
 ### WS /ws/conversation
 
@@ -172,9 +185,10 @@ Turn contract (also for SSE):
   frame, socket stays open) or the stream ends without a done frame.
   Nothing is sent after the terminal frame, so one socket carries
   consecutive turns.
-- Ingress rejections are terminal frames: `Message too large`,
-  `Rate limit exceeded` (with `retry_after_ms`), `Invalid request`,
-  `Service not ready`.
+- Ingress rejections are terminal frames: `Message too large` (with
+  `max_bytes`), `Rate limit exceeded` (with `retry_after_ms`),
+  `Invalid request`, `Service not ready`. A dispatch failure sends the
+  terminal frame `Internal error` with `trace_id`.
 - At most 5 concurrent sockets per client IP; an over-limit connect is
   rejected before the handshake completes (HTTP 403).
 
@@ -372,6 +386,7 @@ entity is in `approval.allowlist_entities` (see
   4 attachments, a non-image mime type, invalid base64, an image over 8 MB.
 - `401`: missing or invalid API key.
 - `413`: request body over 48 MiB.
+- `503`: `Service not ready` (dispatcher not initialized).
 - `502`: the orchestrator turn ended in an error (canned failure, all agents
   failed; the detail is the error text and the formatter is skipped), the
   vision step failed (including a configured `vision-agent` model
@@ -410,7 +425,7 @@ Returns one model:
 **Request body:** OpenAI shape; only `messages` and `stream` are used, other fields are ignored.
 
 - The text of the **last `user` message** is the turn (list content concatenates its `text` parts). System messages and earlier history are ignored; the server-side history keyed by the conversation id is authoritative.
-- Empty text: `400`. Text longer than the `POST /api/conversation` `text` limit (500 characters): `400` with `{"error": {"message": "...", "type": "invalid_request_error", "code": "text_too_long"}}`.
+- Errors raised by the endpoint use `{"error": {"message": "...", "type": ..., "code": ...}}`: empty text `400` code `empty_message`; text longer than the `POST /api/conversation` `text` limit (500 characters) `400` code `text_too_long` (type `invalid_request_error`); dispatcher not ready `503` code `service_unavailable` (type `server_error`). `401` and `429` use `{"detail": "..."}`.
 - Language: the `language` setting, same as the dashboard chat (`auto` = detect from the user input; `en` when unset).
 
 **Headers read (Open WebUI):**
@@ -510,22 +525,26 @@ Get all settings grouped by category.
 
 ### PUT /api/admin/settings
 
-Update multiple settings.
+Update multiple settings. All keys are validated before any write.
 
 **Auth:** Admin session
 
-**Request body:**
+**Request body:** `items` is a non-empty map of existing setting keys (max 128 characters) to values.
 
 ```json
 {
-  "cache.routing.semantic_threshold": "0.90",
-  "cache.action.semantic_threshold": "0.90"
+  "items": {
+    "cache.routing.semantic_threshold": "0.90",
+    "cache.action.semantic_threshold": "0.90"
+  }
 }
 ```
+
+**Response:** `{"status": "ok"}`. An unknown key or an invalid value returns `400`; an empty or malformed `items` returns `422`. Values are checked against the stored `value_type` (`int`, `float`, `bool`; empty strings are rejected). `memory.scope` accepts `user` or `global`, `memory.wait_mode` accepts `best_effort` or `blocking`, `mediation.reasoning_effort` and `mediation.merge_reasoning_effort` accept empty (inherit the orchestrator agent config), `none`, `low`, `medium` or `high`, and the numeric `voice.speaker_id.*` keys are range-checked.
 
 ### PUT /api/admin/settings/{key}
 
-Update a single setting.
+Update a single existing setting. The type and category come from the stored row.
 
 **Auth:** Admin session
 
@@ -533,11 +552,11 @@ Update a single setting.
 
 ```json
 {
-  "value": "0.90",
-  "value_type": "float",
-  "category": "cache"
+  "value": "0.90"
 }
 ```
+
+**Response:** `{"status": "ok", "key": "<key>"}`. A missing `value` returns HTTP 200 with `{"status": "error", "detail": "Missing value"}`; an unknown key or an invalid value returns `400` (same validation as `PUT /api/admin/settings`).
 
 ---
 
@@ -612,11 +631,11 @@ Auth: admin session.
 
 ### GET /api/admin/agents/{agent_id}/prompt
 
-Get the compiled system prompt for a built-in or custom agent.
+Read the prompt file `container/app/prompts/<agent_id without "-agent">.txt`. Returns `{"agent_id", "filename", "content"}`; `400` for an invalid id (allowed: letters, digits, `_`, `-`), `404` when the file does not exist.
 
 ### PUT /api/admin/agents/{agent_id}/prompt
 
-Update the system prompt for a custom agent.
+Body `{"content": "<text>"}`. Writes the same prompt file (creating it when missing) and returns `{"status": "ok", "agent_id", "filename"}`; `400` for an invalid id.
 
 Auth: admin session.
 
@@ -630,7 +649,7 @@ List all custom agents.
 
 ### POST /api/admin/custom-agents
 
-Create a custom agent. The stored name is normalized to a lowercase slug
+Create a custom agent (`201`; `409` when the name exists; `422` for an invalid name or field). The stored name is normalized to a lowercase slug
 and the runtime agent ID is `custom-{name}`. Creation also creates the
 matching `agent_configs` row used by LLM calls, synchronizes MCP tool
 assignments into `agent_mcp_tools`, and synchronizes entity visibility
@@ -690,7 +709,7 @@ List all MCP servers with connection status.
 
 ### POST /api/admin/mcp-servers
 
-Add a new MCP server.
+Add a new MCP server. `transport` is `stdio` or `sse` (`400` otherwise); `409` when the name exists. Returns `201` with `{"name", "connected"}`.
 
 **Request body:**
 
@@ -706,7 +725,7 @@ Add a new MCP server.
 
 ### DELETE /api/admin/mcp-servers/{name}
 
-Remove an MCP server.
+Remove an MCP server. `404` when unknown; `403` for the built-in servers `duckduckgo-search` and `wikipedia-search`.
 
 ### GET /api/admin/mcp-servers/{name}/tools
 
@@ -737,9 +756,14 @@ Get entity index statistics with per-domain breakdown.
 {
   "count": 150,
   "last_refresh": "2025-01-15T10:30:00",
-  "domains": {"light": 45, "switch": 30, "climate": 5}
+  "domains": {"light": 45, "switch": 30, "climate": 5},
+  "embedding": {},
+  "sync": {},
+  "sync_interval_minutes": 30
 }
 ```
+
+`embedding` and `sync` are objects (embedding model info and status; sync counters). Without an index the response is `{"count": 0, "status": "not_initialized", "domains": {}, "embedding": null, "sync": {}}`.
 
 ### POST /api/admin/entity-index/refresh
 
@@ -755,7 +779,7 @@ Get visibility rules for an agent.
 
 ### PUT /api/admin/entity-visibility/{agent_id}
 
-Set visibility rules for an agent.
+Set visibility rules for an agent. Valid `rule_type` values: `domain_include`, `domain_exclude`, `area_include`, `area_exclude`, `entity_include`, `device_class_include`, `device_class_exclude` (`422` otherwise). Returns `{"agent_id", "rules_count"}`.
 
 **Request body:**
 
@@ -831,19 +855,24 @@ tiers.
 Multipart upload that restores cache entries from an envelope.
 
 **Form fields:**
-- `file` -- the JSON envelope (max 50 MiB)
-- `mode` -- `merge` or `replace`
-- `tiers` -- CSV of tier names (`routing`, `action`)
+- `file` -- the JSON envelope (max 50 MiB, `413` above)
+- `mode` -- `merge` (default) or `replace`
+- `tiers` -- CSV of tier names (`routing`, `action`; default both)
+- `re_embed` -- boolean, accepted and currently ignored
 
-The envelope shape is `{"format_version": 4, "tiers": {"routing":
-[<entry>, ...], "action": [<entry>, ...]}}`. Only `format_version: 4`
-envelopes are accepted; older exports must be regenerated. Action entries
+The envelope shape is `{"format_version": 4, "schema_version": 4,
+"exported_at", "source_app_version", "embedding_model", "tiers":
+{"routing": [<entry>, ...], "action": [<entry>, ...]}}`. Only
+`format_version: 4` with `schema_version: 4` is accepted (`400`
+otherwise); older exports must be regenerated. Action entries
 must carry `schema_version: 6` with origin provenance; older action
 entries are skipped. When the
 embedding model recorded in the envelope differs from the active one,
 the import emits a warning (routing semantic matching relies on
 embeddings, so consider flushing the routing tier after a model
 switch).
+
+**Response:** `{"status": "ok", "mode", "format_version", "tiers": {"<tier>": {"imported", "skipped", "re_embedded", "warnings"}}, "warnings"}`. An invalid `mode`, no supported tier, an unreadable upload or an invalid envelope returns `400`.
 
 ### DELETE /api/admin/cache/entries/{entry_id}
 
@@ -902,8 +931,7 @@ Auth: admin session.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/admin/container-api-key` | Report whether an API key is set. |
-| POST | `/api/admin/container-api-key` | Create the initial API key. |
-| PUT | `/api/admin/container-api-key` | Replace the stored API key with a caller-supplied value. |
+| PUT | `/api/admin/container-api-key` | Replace the stored API key with a caller-supplied value (body `{"api_key"}`, at least 16 characters, else `422`). |
 | POST | `/api/admin/container-api-key/rotate` | Generate a new API key server-side and return it once. |
 
 Auth: admin session.
@@ -912,8 +940,8 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/entity-matching-weights` | Return the current five-signal weight vector. |
-| PUT | `/api/admin/entity-matching-weights` | Update one or more signal weights. |
+| GET | `/api/admin/entity-matching-weights` | Return `{"weights": {key: value}}` for the four signals `weight.levenshtein`, `weight.jaro_winkler`, `weight.phonetic`, `weight.alias`. |
+| PUT | `/api/admin/entity-matching-weights` | Update weights from a flat `{key: value}` map (or under `items`); other keys are ignored. |
 
 Auth: admin session.
 
@@ -928,14 +956,14 @@ Auth: admin session.
 | PUT | `/api/admin/llm-providers/ollama` | Update Ollama provider config (special endpoint for local inference). |
 | GET | `/api/admin/llm-providers/{provider}/models` | List the models the provider offers (`?refresh=true` bypasses the cache). |
 | POST | `/api/admin/llm-providers/test` | Validate credentials by listing the provider's models; nothing is persisted. |
-| DELETE | `/api/admin/llm-providers/custom_openai` | Remove the custom provider (clears settings). |
+| DELETE | `/api/admin/llm-providers/{provider}` | Delete the stored API key of `openrouter`, `groq`, `anthropic`, `cerebras` or `custom_openai` (other ids `400`); `custom_openai` also clears the custom provider name, base URL and headers. |
 
 **Custom provider semantics (PUT `/api/admin/llm-providers/custom-openai`):**
 
 | Field | Omitted/empty | Nonempty | Null/invalid |
 |------|---------------|----------|--------------|
 | `api_key` | Stored key is kept; no secret write | Replaces the stored key | `null` rejected with 422 |
-| `extra_headers` | Stored headers are kept | `null` rejected with 422 | `{}` clears; any other map replaces the complete stored map (no merge) |
+| `extra_headers` | Omitted or `null`: stored headers are kept | `{}` clears; any other map replaces the complete stored map (no merge) | A non-object value is rejected with 422 |
 
 `name` and `base_url` are always written on success. GET never returns the stored key or headers; a provider is `configured` only when both a stored key and base URL exist.
 
@@ -997,6 +1025,7 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 | GET | `/api/admin/timers/history` | Finished timers and alarms (`fired`, `expired`, `cancelled`) of the last 30 days, newest first. Query `limit` 1-500 (default 100). Returns `{"history": [...], "retention_days": 30}`; each entry has `id`, `logical_name`, `kind`, `state`, `duration_seconds`, `fires_at`, `ended_at`, `origin_label`. |
 | GET | `/api/admin/timers/recently-expired` | Compatibility endpoint (returns empty list). |
 | GET | `/api/admin/timers/satellites` | List timer satellite devices. |
+| POST | `/api/admin/timers` | Create a timer or internal alarm (`201`, `{"status": "ok", "id"}`). Body: `logical_name` (1-128 characters), `kind` (`plain`, `notification`, `delayed_action`, `sleep`, `snooze`, `alarm`), `duration_seconds` (required and positive unless `kind` is `alarm`), `fires_at` (future Unix timestamp, required for `alarm`), optional `origin_device_id`, `origin_area`. `422` for invalid input, `503` without a scheduler. |
 | PATCH | `/api/admin/timers/{timer_id}` | Update a timer. |
 | DELETE | `/api/admin/timers/{timer_id}` | Delete a timer. |
 
@@ -1018,7 +1047,7 @@ Auth: admin session.
 | DELETE | `/api/admin/voice/enroll` | Cancel the armed enrollment; returns `cancelled`. |
 | GET | `/api/admin/voice/turns` | Recorded voice turns (`voice.speaker_id.keep_audio`), newest first. Query: `limit` (`1-200`, default `50`), `offset`, `status` (`identified`, `unknown` or `no_profiles`; other values 422), `assigned` (`true`/`false`). Returns `{"turns", "total", "limit", "offset", "keep_audio", "audio_retention_days", "min_enroll_duration_s"}`; each turn has `id` (32 hex chars), `created_at`, `conversation_id`, `trace_id` (the trace linked by the speaker lookup, else the first trace of the same `conversation_id` from 5 s before to 60 s after the recording that no other recorded turn is linked to; `null` without either), `trace_match` (`lookup`, `time_window` or `null`), `transcript` (user input of that trace, `null` without one), `duration_s`, `speech_s`, `status`, `speaker_profile_id`, `speaker_name`, `score`, `margin`, `model`, `current_model`, `assigned`, `assigned_profile_id`, `assigned_name`, `assigned_sample_id`, `assigned_at` and `assignable` (`speech_s >= voice.speaker_id.min_enroll_duration_s`). No embeddings. |
 | GET | `/api/admin/voice/turns/{turn_id}/audio` | The recorded speech as `audio/wav` (16 kHz mono 16-bit, `Cache-Control: private, no-store`). 404 for an unknown turn or a missing file. |
-| POST | `/api/admin/voice/turns/{turn_id}/assign` | Store the turn as an enrollment sample: body `{"profile_id", "force": false}`. Works without an armed enrollment and never changes it. Runs the enrollment guard against the target profile. Errors carry `detail` and `error`: 404 (unknown turn or profile, also when either is deleted during the assignment; `audio_missing` when a re-embedding needs the file), 409 `already_assigned`, 422 `too_short`, 409 `guard_rejected` with `reason` (`rejected_other_speaker` / `rejected_inconsistent`) and `scores` (`own`, `best_other`, `best_other_name`, `lead`, `all`) unless `force` is true, 503 `engine_unavailable` when the turn was recorded with another speaker model and the engine is not ready to re-embed its audio. Returns `{"ok", "turn_id", "profile_id", "sample_id", "forced", "recomputed", "guard": {"reason", "scores"}}`. Deleting the sample later makes the turn assignable again. |
+| POST | `/api/admin/voice/turns/{turn_id}/assign` | Store the turn as an enrollment sample: body `{"profile_id", "force": false}`. Works without an armed enrollment and never changes it. Runs the enrollment guard against the target profile. Errors carry `detail` and `error`: 404 (unknown turn or profile, also when either is deleted during the assignment; `audio_missing` when a re-embedding needs the file), 409 `already_assigned`, 422 `too_short`, 409 `guard_rejected` with `reason` (`rejected_other_speaker` / `rejected_inconsistent`) and `scores` (`own`, `best_other`, `best_other_name`, `lead`, `all`) unless `force` is true, 503 `engine_unavailable` when the turn was recorded with another speaker model and the engine is not ready to re-embed its audio, 500 `embedding_failed` when that re-embedding fails. Returns `{"ok", "turn_id", "profile_id", "sample_id", "forced", "recomputed", "guard": {"reason", "scores"}}`. Deleting the sample later makes the turn assignable again. |
 | DELETE | `/api/admin/voice/turns/{turn_id}` | Delete one recorded turn and its audio (a sample made from it stays). 404 when unknown. |
 | DELETE | `/api/admin/voice/turns` | Delete every recorded turn and its audio; returns `deleted`. |
 
@@ -1040,7 +1069,7 @@ voice socket answers `disabled` otherwise).
 | DELETE | `/api/admin/calendar/events` | Delete an event; JSON body `{calendar_id, uid, recurrence_id?}`. Uses the HA WebSocket `calendar/event/delete` command; `503` without a WebSocket connection. |
 | GET | `/api/admin/calendar/calendars` | List visible calendars with their enabled status. |
 | GET | `/api/admin/calendar/entity-settings` | Get calendar entity settings. |
-| PUT | `/api/admin/calendar/entity-settings/{entity_id}` | Enable/disable a calendar entity for reminders. |
+| PUT | `/api/admin/calendar/entity-settings/{entity_id}` | Enable/disable a calendar entity for reminders; body `{"enabled", "is_universal"?}` (`is_universal` defaults to `false`; `GET /calendars` returns it). |
 | POST | `/api/admin/calendar/entity-settings/sync` | Add missing visible calendars (enabled by default). |
 | GET | `/api/admin/calendar/settings` | Get calendar settings. |
 | POST | `/api/admin/calendar/settings` | Update calendar settings. |
@@ -1111,10 +1140,26 @@ action-cache hit; see [Configuration](configuration.md#rewrite-agent-settings).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/personality/config` | Read the personality prompt and mediation parameters. |
-| PUT | `/api/admin/personality/config` | Update the personality prompt and mediation parameters. |
+| GET | `/api/admin/personality/config` | Read the personality prompt, mediation and filler parameters. |
+| PUT | `/api/admin/personality/config` | Update any of those fields; omitted fields are unchanged. Returns `{"status": "ok"}`. |
 
 Auth: admin session.
+
+GET returns `prompt`, `mediation_temperature`, `mediation_reasoning_effort`,
+`mediation_merge_reasoning_effort`, `mediation_model`,
+`mediation_model_supports_reasoning`, `filler_enabled`,
+`filler_threshold_ms` and `filler_speculative_start`. PUT accepts the same
+fields except `mediation_model` and `mediation_model_supports_reasoning`.
+
+- `mediation_reasoning_effort` (setting `mediation.reasoning_effort`) and
+  `mediation_merge_reasoning_effort` (`mediation.merge_reasoning_effort`)
+  are empty (inherit the orchestrator agent config) or one of `none`,
+  `low`, `medium`, `high`. PUT lower-cases and trims them; any other value
+  returns `400` and nothing is saved.
+- `mediation_model` is the effective mediation model: the `mediation.model`
+  setting, else the `orchestrator` agent's model (`""` when neither is
+  set). `mediation_model_supports_reasoning` is litellm's reasoning-model
+  flag for it; `null` when no model is known or the lookup failed.
 
 ## Admin -- Wake Briefing
 
@@ -1152,11 +1197,11 @@ Auth: admin session.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/domain-agent-map` | Read the domain-to-agent routing table. |
-| PUT | `/api/admin/domain-agent-map` | Replace the domain-to-agent routing table. |
-| PUT | `/api/admin/domain-agent-map/device-class` | Update device-class overrides used by the routing table. |
+| GET | `/api/admin/domain-agent-map` | Domains and device classes with entity counts and the agents that may see them: `{"domains": [{domain, entity_count, agents}], "all_agents", "device_class_agents", "device_classes": [{device_class, entity_count, agents}]}`. |
+| PUT | `/api/admin/domain-agent-map` | Set the agents for one domain; body `{"domain", "agent_ids"}`. |
+| PUT | `/api/admin/domain-agent-map/device-class` | Set the agents for one device class; body `{"device_class", "agent_ids"}`. |
 
-Auth: admin session.
+Auth: admin session. The map controls entity visibility per agent (`domain_include` and `device_class_include` rules), not orchestrator routing.
 
 ## Admin -- Entity index (match preview)
 
@@ -1166,6 +1211,19 @@ Auth: admin session.
 
 Auth: admin session. Companion to the existing `/api/admin/entity-index/stats`
 and `/api/admin/entity-index/refresh` endpoints documented above.
+
+Query: `q` (required, 1-200 characters), `agent_id` (optional, applies that
+agent's allowed domains and visibility rules), `domain` (optional hard
+filter, max 64 characters). `503` when the entity index is not
+initialized. Response keys: `query`, `agent_id`, `domain`,
+`agent_allowed_domains`, `preferred_domains`, `deterministic`
+(`entity_id`, `friendly_name`, `ha_friendly_name`, `speech`, `metadata`,
+`domain_allowed`, `error`), `hybrid` (list of `entity_id`,
+`friendly_name`, `ha_friendly_name`, `domain`, `area`, `score`,
+`signal_scores`), `hybrid_error`, `visibility` (`agent_id`, `rules`,
+`visible_entity_count`, `total_entity_count`) and, only when `hybrid` is
+empty, `diagnostics` (`reason`: `unknown`, `no_entities_of_allowed_domains`
+or `filtered_out`; `allowed_domains`; `domain_counts`).
 
 `deterministic.friendly_name` and each `hybrid[].friendly_name` carry the
 index name (the entity's own name for a user-named device entity, see
@@ -1193,9 +1251,9 @@ list and `/api/admin/traces/{trace_id}` detail endpoints.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/dashboard/overview` | Compact JSON used by the dashboard landing page. |
-| GET | `/api/admin/dashboard/overview/extended` | Extended dashboard overview (MCP, plugin status). |
-| GET | `/api/admin/dashboard/health/extended` | Extended health snapshot for the System Health page. |
+| GET | `/api/admin/overview` | Compact JSON used by the dashboard landing page. |
+| GET | `/api/admin/overview/extended` | Extended dashboard overview (MCP, plugin status). |
+| GET | `/api/admin/health/extended` | Extended health snapshot for the System Health page. |
 
 Auth: admin session.
 
@@ -1319,18 +1377,18 @@ Recency semantics:
 
 | Code | Meaning |
 |------|---------|
-| 400 | Schema-level rejection (for example, malformed cache export envelope). |
-| 401 | Missing `X-Container-API-Key` / `Authorization: Bearer ...` for conversation endpoints, or missing/invalid admin session cookie for admin endpoints. |
-| 403 | Credentials present but refused (for example, a stale `X-Container-API-Key` after rotation). |
+| 400 | Rejected input (for example, malformed cache export envelope, unknown or invalid setting value). |
+| 401 | Missing, malformed or wrong `Authorization: Bearer ...` key (also when the stored key cannot be decrypted), or missing/invalid admin session cookie for admin endpoints. |
+| 403 | Cross-site request blocked by the CSRF guard; deleting a built-in MCP server; WebSocket connect rejected before the handshake (connection limit). Never returned for bad credentials. |
+| 404 | Unknown resource (agent, trace, timer, profile, MCP server, ...). |
+| 413 | Body over the route limit: 10 MiB on the settings, LLM-provider, HA-connection, timer, agent-list, API-key and voice admin routes (`Content-Length`), 256,000 bytes on log ingest, 48 MiB on `/api/ai_task`, 50 MiB on cache import. |
 | 422 | Pydantic-level body validation failure. |
 | 429 | Per-route rate limiter rejected the request. |
-| 503 | Home Assistant is unreachable from the container (REST or WebSocket). |
+| 502 | AI task orchestrator, vision or structured-output failure. |
+| 503 | Dispatcher not ready (`Service not ready`), Home Assistant unreachable from the container (REST or WebSocket), or the named subsystem is not initialized. |
 
-Admin endpoints distinguish missing-credential (`401`) from
-credential-rejected (`403`) so the dashboard and the HA integration
-can show different remediation messages. The HA integration's REST
-fallback uses these codes to surface the distinct user-facing
-error messages.
+Credential failures are always `401`; there is no separate status for a
+rejected key.
 
 ## WebSocket close-error contract
 

@@ -18,7 +18,7 @@ docker compose logs ha-agenthub
 - Python import errors in logs: Indicates a corrupted build. Remove the image and pull again:
   ```bash
   docker compose down
-  docker rmi ghcr.io/mainzerp/ha-agenthub:main
+  docker rmi ghcr.io/mainzerp/ha-agenthub:latest
   docker compose pull
   docker compose up -d
   ```
@@ -82,10 +82,10 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 **Steps to resolve:**
 
 1. Check the entity index status page in the admin dashboard (Entity Index page).
-2. Trigger a manual refresh: click "Refresh" on the Entity Index dashboard page or call `POST /api/admin/entity-index/refresh`.
+2. Trigger a manual refresh: click "Refresh from HA" on the Entity Index dashboard page or call `POST /api/admin/entity-index/refresh`.
 3. Verify the entity is exposed in Home Assistant -- only entities visible through the HA REST API (`/api/states`) are indexed.
-4. Add an alias: In the admin dashboard, create an alias mapping your preferred name to the exact entity ID (e.g., "bedroom light" -> `light.bedroom_main`).
-5. Check entity matching weights: Adjust the signal weights on the Entity Index dashboard page if matches are consistently wrong.
+4. Add an alias: list it in `/data/entity_aliases.yaml` (`aliases:` entries with `alias` and `entity_id`, loaded during the entity-index sync). The dashboard has no alias editor. Known limitation: Home Assistant voice aliases are not read today (the alias lookup reads a state attribute HA never sets), and aliases do not feed keyword recall yet, so an alias only helps when the agent resolves a free-form name. Renaming the entity in HA is the reliable fix.
+5. Check entity matching weights: adjust the signal weights under **Settings > Entity Matching** if matches are consistently wrong.
 6. "Multiple entities match '...'": two or more visible entities share the name, alias, or area that was said, or the fuzzy matcher found two near-equal candidates. The agent asks instead of guessing. Rename one entity in HA, add a distinct alias, or name the room.
 7. Areas or device names look stale or missing: the container log shows `HA registry lookup <key> failed` when the `/api/template` registry lookup fails. The last good lookup stays in use; until the entity-area lookup has succeeded once, agents with `area_exclude` visibility rules do not see entities without an area. Check HA reachability and the HA log for template errors.
 8. An entity is matched or spoken with its device name in front (HA 2026.11 shows "device name + entity name"): the Entity Index match preview shows the index name and, underneath, HA's friendly name. The device name is dropped only for an entity that has its own name in HA and whose friendly name is exactly "device name + own name"; entities without their own name, a device's main entity, `customize` names and names HA froze in the upgrade keep HA's name (see [Architecture](architecture.md#entity-names)). An own name that would equal another entity's name in the same domain also keeps HA's name: give the entities distinct names. The own names come from the WebSocket entity registry (`Fetched <n> hidden/disabled entities and <m> user-set entity names` in the container log); while it is unreadable, the last good read stays in use, and HA's names apply only until the first successful read.
@@ -101,7 +101,7 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 - SQLite cache tables missing or inaccessible: The routing cache and action cache live in a dedicated SQLite database at `/data/chromadb/cache.db` (under `CHROMADB_PERSIST_DIR`). Check startup logs for schema/DB errors.
 - sqlite-vec entity index not initialized: The action cache relies on the entity index; check the Entity Index dashboard page and startup logs for embedding or vec0 errors.
 - Threshold settings: the routing cache consults its semantic sqlite-vec tier after an exact-hash miss; raise `cache.routing.semantic_threshold` (default 0.92) if semantically similar but wrong requests get routed to the wrong agent, lower it to increase semantic hit rate. `cache.action.semantic_threshold` is a legacy value retained for backward compatibility -- the action cache uses exact SHA-256 hash matching only.
-- Cold cache after upgrade: the routing-cache schema version 5 purges all pre-existing routing entries at the first boot after the upgrade (a cold cache start is expected; entries rebuild organically from new requests).
+- Cold cache after upgrade: routing rows stored by a schema older than the current one (6) are treated as a miss on read, and rows below schema 5 are purged at startup (a cold cache start is expected; entries rebuild from new requests).
 - Context-dependent turns are never cached: an answer to a clarifying question, a turn with an identified voice speaker, or a command whose executed entity was a recent anaphora referent that the wording does not name ("turn it off", "Licht aus" for the referent "Keller Licht") stores neither an action nor a routing row. Naming the referent completely is not context-dependent: "Keller ausschalten" after "Keller einschalten" is cached (every token of the entity's friendly name, an alias or the device name must appear in the text; compound words count). Repeat the full command to cache it.
 - Area-bound replay: action rows replay for any origin unless the executed entity lay in the learning turn's area; such a row replays only from that area (`hit_type` `origin_mismatch` with `expected_area_id` / `actual_area_id` on the `cache_lookup` span). The live turn from another area re-learns the phrase.
 - Cold action cache after upgrade: action-cache schema 6 purges older rows at startup (`Action cache rows deleted: reason=startup_legacy_schema ...`, plus one `Bulk action-cache deletion` WARNING when more than 3 rows go), and cache imports skip pre-6 action rows. Rows rebuild from live turns; do not flush unrelated cache tiers or settings.
@@ -110,13 +110,16 @@ Navigate to `http://<host>:8080/setup/` and use the "Test" button for each provi
 
 - `visibility_rejected` -- a referenced entity is no longer visible to the cached agent; the row is deleted and the turn falls through to the routing tier.
 - `visibility_deferred_index_not_ready` -- same rejection during startup before the entity index loaded its first HA snapshot; the row is kept but not replayed (container log: `Action cache row kept: reason=visibility_rejected ... (entity index not loaded yet)`).
-- `replay_failed` -- the HA service call failed; the row is kept (container log: `Action cache replay failed for entry ...`).
+- `replay_failed` -- the HA service call failed; the row is kept (container log: `Action cache replay failed for entry ...`). With `approval_blocked: true` in the span details the cached action was sensitive instead: the row is deleted (reason `sensitive`) and no WARNING is logged.
 - `origin_mismatch`, `legacy_schema`, `invalid_command`, `context_dependent`, `agent_unavailable` -- the turn runs the full live path.
+- `routing_invalid` / `semantic_invalid` -- the routing tier found a row (exact or semantic neighbour) whose agent is unavailable or whose entity is no longer visible; that routing row is deleted and the turn runs the full path.
 - `skipped` -- no lookup ran; `skip_reason` says why: `pending_question` (the turn answers a clarifying question), `pending_approval`, `pre_classified`, `stateless_task` (AI task), `compound_utterance`, `cache_disabled`, `cache_unavailable`. The trace list shows the same value as `cache_hit_type`.
 
 **Diagnose a missing store:** the turn's `return` span (streamed and blocking paths alike) records `cache_stored_action`, `cache_stored_response` and `cache_stored_routing`; all `false` on a successful command usually means a context-dependent turn (see above).
 
 **Rows disappear unexpectedly:** every action-row deletion logs `Action cache row deleted: reason=<reason> key=<key> query=<text> entity_ids=[...]` at INFO (bulk paths without row details log `Action cache rows deleted: reason=<reason> count=<n>`); more than 3 rows in one operation also log `Bulk action-cache deletion: <n> rows, reason=<reason> ... keys=[...]` at WARNING, which survives restarts in the persisted warning log. Lookup-path reasons are `invalid_command`, `context_dependent`, `legacy_schema`, `origin_mismatch` (area-bound row without an area), `agent_unavailable`, `visibility_rejected` and `sensitive`; other reasons are `registry_event`, `entity_name_changed`, `validator`, `manual_delete`, `flush` and the `startup_*` purges. Reason `registry_event` carries the triggering registry event and changed fields; only entity rename/removal, name, alias, area, device, device-class, hidden or disabled changes, area removal or rename, and device name or area changes delete rows. Reason `entity_name_changed` deletes the rows of an entity whose index name changed (detail `path=sync:<reason>`, `path=state_changed` or `path=registry_refresh:<kind> (name collision guard)`); expect a batch of these on the first sync after upgrading to the own-name rule. Cache stats (`GET /api/admin/cache/stats`, `action.deletions`) count deletions by reason since process start.
+
+**Routing rows disappear:** an exact routing row that served a turn whose agent then failed is deleted (container log `Invalidated served routing entry ... (reason=cached_agent_turn_failed)`; the `return` span shows `routing_cache_invalidated`). A clarifying question is not a failure, and a semantic neighbour row is not deleted.
 
 **Verify cache tables and entity index:**
 
@@ -158,9 +161,9 @@ conn.close()
 "
 ```
 
-This clears the wizard progress and causes the setup wizard to run again on the next request.
+Deleting the rows alone does not reopen the wizard (no incomplete step left counts as setup complete). The restart is required: startup re-creates the steps as incomplete, so the wizard runs again.
 
-Then restart the container:
+Restart the container:
 
 ```bash
 docker compose restart ha-agenthub
@@ -178,6 +181,7 @@ docker compose restart ha-agenthub
 - Behind a reverse proxy, forward the original `Host` header (or set `X-Forwarded-Host`) so the origin check matches.
 - Scripts should use `curl` with a cookie jar (no `Origin`/`Sec-Fetch-Site` headers) or the `Authorization: Bearer` API key where the endpoint accepts it.
 - To allow a trusted cross-origin page, list its exact origin in `CORS_ORIGINS`.
+- Every blocked request logs a WARNING `CSRF guard blocked <method> <path> (sec-fetch-site=..., origin=...)` in the container log.
 
 ## Dashboard Does Not Load in a Home Assistant Iframe
 
@@ -237,7 +241,7 @@ To adjust logger levels at runtime, use the admin dashboard Logs page or call `P
 
 **Symptoms:** You want to remove a single incorrect cache entry without flushing the entire tier.
 
-**Fix:** Use the admin dashboard Cache page. Each entry has a delete button. Alternatively, call `DELETE /api/admin/cache/entries/{entry_id}`.
+**Fix:** Use the admin dashboard Cache page. Each entry has a delete button. Alternatively, call `DELETE /api/admin/cache/entries/{entry_id}?tier=routing|action`; `tier` defaults to `routing`, so an action row needs `?tier=action` (otherwise nothing is deleted).
 
 ## Voice Follow-Up Not Working
 
@@ -318,13 +322,13 @@ Symptom: while one person enrolls alone, most samples are rejected (the satellit
 
 - The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped. The default rules allow `assist_satellite` and `media_player`; if you restricted the `timer-agent` rules, keep both allowed. A skipped satellite falls back to TTS on a media player.
 - A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
-- After a container restart, timers and alarms that came due while it was down are reported once as missed instead of ringing late; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
+- After a container restart, timers and alarms that came due while it was down ring normally when at most 60 s late, otherwise they are reported once as missed; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
 
 ## Entity Not Found with LLM Clarification
 
 **Symptoms:** The assistant asks clarifying questions instead of acting when an entity is not found.
 
-**Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; adding an HA alias remains the reliable fix for names that differ more.
+**Fix:** Since 1.19.0, the orchestrator dispatches LLM clarification turns when entity resolution fails. This is expected behavior. If you prefer the old silent failure mode, there is no toggle; ensure entity aliases and visibility rules are correct to minimize not-found cases. The matcher tolerates underscore-joined queries (e.g. `jalousie_mitte`) and close singular/plural name variants; renaming the entity in HA is the reliable fix for names that differ more (HA voice aliases are not read yet).
 
 ## Camera Not Shown on the TV
 
@@ -422,14 +426,14 @@ Logs include timestamp, level, logger name, and message.
 
 - Is the `ship_logs` option actually enabled in the integration options dialog, and was the entry reloaded afterwards?
 - Is `ship_logs_level` set low enough? The level gate is on the shipper handler only -- the HA logger's own level still applies, so records below the effective HA log level never reach the shipper.
-- Is the container reachable from HA and the API key correct? A failed `/api/logs/ingest` POST (including `401`) drops the batch silently (drop-and-count with exponential backoff, no requeue); a rejected key is reported by the conversation, AI Task, and STT paths, which start re-authentication. The drop counters are in the entry's **Download diagnostics** file.
-- When filtering the admin logs view by level, use the uppercase canonical levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).
+- Is the container reachable from HA and the API key correct? A failed `/api/logs/ingest` POST drops the batch (drop-and-count with exponential backoff, no requeue); a non-2xx answer (including `401`) logs `Log ingest POST to ... failed with status ...; dropping N record(s)` as a WARNING in the HA log, transport errors only increase the drop counters; a rejected key is reported by the conversation, AI Task, and STT paths, which start re-authentication. The drop counters are in the entry's **Download diagnostics** file.
+- The admin logs level filter accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (case-insensitive); other values return `400`.
 - A container restart keeps only shipped records at WARNING and above (see [Remote Logs Not Visible](#remote-logs-not-visible)).
 
 ## Empty WebSocket Responses on HA Voice
 
 **Symptoms:** The HA voice pipeline says nothing back after a turn,
-but the dashboard "Conversations" or "Traces" page shows the turn was
+but the dashboard "Traces" page shows the turn was
 processed end-to-end.
 
 **Likely cause:** A streamed turn produced no final speech token

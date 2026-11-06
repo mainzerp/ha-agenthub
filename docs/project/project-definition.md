@@ -2,7 +2,7 @@
 
 HA-AgentHub is a multi-agent Home Assistant assistant built around a container execution engine and a thin Home Assistant bridge.
 
-This document describes the repository as it exists today. Planned or partial work is tracked in [TODO.md](TODO.md) instead of being described as current behavior.
+This document describes the repository as it exists today. Planned or partial work is tracked in [TODO.md](../../TODO.md) instead of being described as current behavior.
 
 > Naming note: the public product name is `HA-AgentHub`. Some internal and runtime identifiers still use legacy `agent-assist` naming for backward compatibility, including local compose service names, database and cookie prefixes, and cache export tags.
 
@@ -78,7 +78,7 @@ flowchart LR
 
     RW --> B
 
-    BG[Background services\nbackground_actions\ndelayed_tasks\nalarm_monitor\ncustom_loader] --> O
+    BG[Background services\nbackground_actions\ntimer_scheduler\nalarm_monitor\ncustom_loader] --> O
     BG --> EI
 ```
 
@@ -87,7 +87,7 @@ Current runtime notes:
 - Action-cache hits short-circuit live agent execution only when a replayable cached action exists.
 - The orchestrator can run a content agent and `send-agent` sequentially in the same turn.
 - Filler speech, rewrite, mediation, and tracing are runtime stages, not future design ideas.
-- Entity index priming, state-change updates, delayed notifications, timers, alarms, and custom-agent loading run as background services around the main request path.
+- Entity index priming, state-change updates, delayed notifications, timers (the SQLite-backed timer scheduler), alarms, and custom-agent loading run as background services around the main request path.
 
 ---
 
@@ -101,11 +101,11 @@ Current runtime notes:
 | ASGI server | Uvicorn | Container application server |
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
 | Local embeddings | `intfloat/multilingual-e5-base` | Seeded default local embedding model |
-| Vector storage | sqlite-vec (SQLite) | Entity index, routing cache semantic tier, and session memory embeddings; routing and action caches moved to SQLite in v1.37.0 |
+| Vector storage | sqlite-vec (SQLite) | Entity index (`entity_vectors.db`), routing cache semantic tier (`cache.db`), and session memory embeddings (`session_memory.db`); routing and action caches moved to SQLite in v1.37.0 |
 | Speaker identification | sherpa-onnx (CAM++ speaker embeddings, CPU) | Optional, disabled by default; model baked into the image |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
-| Entity matching | rapidfuzz, pyphonetics, embedding search, optional LLM expansion | Deterministic resolution runs before hybrid fallback |
+| Entity matching | Keyword recall, rapidfuzz, pyphonetics, optional LLM expansion | Agent-side keyword recall plus closed-list LLM pick; deterministic stages then hybrid matcher for free-form entity text |
 | Home Assistant access | aiohttp/httpx-based clients | REST execution plus HA WebSocket subscriptions |
 | Admin surface | Server-rendered dashboard templates and admin APIs | Setup, operations, traces, cache, settings, MCP, plugins, send devices |
 | Extensibility | MCP client plus in-process Python plugins | MCP supports `stdio` and `sse` transports |
@@ -133,10 +133,10 @@ The runtime is async end to end. Conversation streaming, agent dispatch, Home As
 
 - Conversation entrypoints expose WebSocket, SSE, and REST conversation routes, plus the non-streaming `POST /api/ai_task` route for Home Assistant AI-task calls (`ai_task.generate_data`).
 - An OpenAI-compatible chat-completions API (`GET /v1/models`, `POST /v1/chat/completions`, trace source `openai`) lets Open WebUI chat with the orchestrator; Open WebUI background tasks are stubbed without dispatch, and Open WebUI users are mapped to Home Assistant users on the Persons page (`external_user_mappings`).
-- Admin APIs cover setup, cache inspection and flushing, traces, analytics, entity index operations, MCP management, plugins, send-device mappings, external user mappings, voice profiles, and settings.
+- Admin APIs cover setup, cache inspection and flushing, traces, analytics, log ingest and viewing, entity index operations, MCP management, plugins, calendar admin, send-device mappings, external user mappings, voice profiles, and settings.
 - `WS /ws/voice` receives teed voice-turn audio from the bridge for speaker identification; a recognized speaker is personalization context only (name, message sender, and with a linked Home Assistant user session memory and calendars) and never changes `user_id`, entity visibility, or authorization. With the opt-in `voice.speaker_id.keep_audio` (off by default), identified and unknown turns are recorded (trimmed speech as WAV in `<data dir>/voice_turns/`, `voice_turns` rows linked to their trace, retention `voice.speaker_id.audio_retention_days`) so the admin can play them and assign them to a profile as enrollment samples on the Voice Profiles page.
 - A request carrying a Home Assistant `user_id` is named after the linked `person.*` entity (cached person lookup in the orchestrator prelude, `TaskContext.requester_name`); that name wins over a voice match for the general/timer prompt line, mediation, and the send sender, and is wording only.
-- The dashboard currently routes to overview, login, agent configuration, system health, chat testing, personality, cache, entity index, analytics, traces, MCP servers, custom agents, timers, plugins, send devices, and unified settings pages.
+- The dashboard currently routes to overview, login, agent configuration, system health, chat testing, personality, cache, entity index, analytics, traces, logs, MCP servers, custom agents, timers, calendar, persons, voice profiles, plugins, send devices, and unified settings pages.
 
 #### Orchestrator
 
@@ -166,13 +166,17 @@ The cache manager exposes a routing cache and a public action cache. Internal co
 
 #### Dashboard and Operations
 
-The current admin surface is operational, not aspirational. It includes setup and login flows, cache tooling, analytics, traces, entity-index management, timers and alarms, MCP server management, custom-agent controls, plugin management, send-device mappings, voice profiles (speaker enrollment and calibration), and unified advanced settings.
+The current admin surface is operational, not aspirational. It includes setup and login flows, cache tooling, analytics, traces, log viewing, entity-index management, timers and alarms, calendar, MCP server management, custom-agent controls, plugin management, send-device mappings, person and external-user mapping, voice profiles (speaker enrollment and calibration), and unified advanced settings.
 
 Visual conventions for the admin surface are documented in `docs/style-guide.md`.
 
+#### Session Memory and Voice
+
+`app/memory/` stores per-user conversation sessions and turns (`memory_sessions`, `memory_turns` in the main SQLite database) with turn embeddings in the separate sqlite-vec file `session_memory.db`. `app/voice/` holds the optional speaker-identification stack (sherpa-onnx speaker engine, voice activity detection, profile enrollment, turn recordings).
+
 #### Plugin System
 
-Plugins are Python code loaded in-process. Lifecycle hooks currently include `configure`, `startup`, `ready`, and `shutdown`. Plugins can extend routing, register agents, add routes, or integrate with other runtime services, but they are not isolated from the main process. They should be treated as trusted code installed by an administrator.
+Plugins are Python code loaded in-process. Lifecycle hooks currently include `configure`, `startup`, `ready`, and `shutdown`. Plugins can extend routing, register agents, add routes, set pipeline strategies, subscribe to the event bus, or integrate with other runtime services, but they are not isolated from the main process. They should be treated as trusted code installed by an administrator.
 
 ### Home Assistant Bridge
 
@@ -203,6 +207,8 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `general-agent` | General answers, questions about HA-AgentHub itself, and fallback handling | Can use assigned MCP tools; built-in `agenthub_self_info` tool (runtime overview and bundled-docs search) |
 | `light-agent` | Lighting actions and state queries | Registered by default |
 | `music-agent` | Music and media-oriented commands | Registered by default |
+| `cover-agent` | Covers, blinds, garage doors and gates | Registered by default; config row seeded disabled |
+| `vacuum-agent` | Robot vacuum control | Registered by default; config row seeded disabled |
 | `timer-agent` | Timer workflows | Registered when enabled |
 | `climate-agent` | Climate and thermostat actions | Registered when enabled |
 | `media-agent` | Media-player actions | Registered when enabled |
@@ -211,6 +217,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | `security-agent` | Locks, alarms, cameras, and related security queries | Registered when enabled |
 | `presence-agent` | Read-only presence: who is home, head count, a person's zone (`person`, `device_tracker`) | Registered when enabled; seeded disabled |
 | `send-agent` | Delivery to notify targets and satellites | Registered when enabled |
+| `calendar-agent` | Calendar queries and event create, update, delete | Registered when enabled |
 | `lists-agent` | Todo and shopping list management | Registered when enabled |
 | custom agents | Database-backed runtime agents | Loaded through the custom-agent loader |
 
@@ -227,7 +234,7 @@ The integration does not resolve entities, classify intent, or execute Home Assi
 | personality mediation | Optional final response mediation layer driven by runtime settings |
 | `sanitize` | Markdown stripping and speech-safe output cleanup |
 | `background_actions` | Background timer and alarm notification delivery |
-| `delayed_tasks` | Deferred task scheduling support |
+| `timer_scheduler` | AgentHub-managed timers, delayed actions, sleep and snooze; persisted in SQLite and restored after restart |
 | `alarm_monitor` | Background alarm and timer monitoring |
 | `custom_loader` | Runtime loading of persisted custom agents |
 
@@ -237,16 +244,19 @@ Entity visibility is managed through database-backed per-agent rules. The runtim
 
 ### Hybrid Entity Matching
 
-Entity resolution is a multi-stage pipeline rather than a single weighted guess:
+Entity resolution has two paths:
 
-1. exact `entity_id` resolution when the input already contains a valid entity ID
-2. exact friendly-name resolution from the indexed entity set
-3. exact friendly-name resolution after stripping trailing device nouns from phrases like "keller light"
-4. visibility filtering, per-action domain filtering, and originating-area tie-breaks before final selection
-5. hybrid scoring across alias, embedding, Levenshtein, Jaro-Winkler, and phonetic signals
-6. containment, area, and token-overlap bonuses applied during hybrid scoring
-7. preserved `verbatim_terms` tried before translated or condensed text
-8. optional on-demand expansion fallback for cold queries, with structured miss logging when resolution still fails
+- **Primary runtime path:** before the LLM call, each domain agent runs keyword recall over its visible entities and injects a closed candidate list. The LLM picks an `entity_id` from that list; the executor accepts it only if it is in the list and passes domain, index, and visibility validation, otherwise it is rejected without a matcher re-run.
+- **Free-form entity text:** when the LLM supplies entity text instead of a candidate id (or a supplied id fails validation without a closed list), `resolve_entity_deterministic_first` runs these stages in order, stopping at the first unambiguous hit:
+
+1. exact `entity_id`
+2. exact friendly-name match over the visibility- and domain-filtered index
+3. exact alias match (Home Assistant aliases and DB/user aliases; on by default)
+4. opt-in per executor (the light executor and condition evaluation enable both): exact friendly-name match after stripping a trailing device noun such as "keller light", then exact area-name match
+5. word-boundary containment of the query in a friendly name
+6. hybrid matcher: Levenshtein, Jaro-Winkler, phonetic, and alias signals over token-preselected candidates, with IDF-weighted token coverage, a verbatim-name score floor, domain filtering, and area and domain tie-breaks; an optional on-demand LLM expansion of cold query tokens and structured miss logging apply when nothing matches
+
+An ambiguous result in stages 2-5 is a deterministic finding: the user is asked to be more specific and the hybrid matcher does not override it.
 
 Current seeded defaults that materially affect matching:
 
@@ -328,7 +338,7 @@ The Home Assistant bridge prefers a persistent WebSocket connection to the conta
 The container and its agents call Home Assistant directly:
 
 - REST requests fetch state and execute services
-- the Home Assistant WebSocket is used for live state-change subscriptions and timer-related events
+- the Home Assistant WebSocket is used for live `state_changed` subscriptions and entity, device, and area registry events
 - domain agents and delivery flows execute from the container rather than delegating back to the Home Assistant integration
 
 ### Authentication
@@ -362,31 +372,35 @@ The current deployment target is a standalone Docker container connecting back t
 ## Project Structure
 
 ```text
-.github/
-  instructions/
-    project-definition.md
-
 container/
   Dockerfile
   docker-compose.yml               # Published-image / deployment compose file
   docker-compose_local.yml         # Local-build compose file with legacy runtime naming
+  entrypoint.sh
+  pyproject.toml
   requirements.txt
   requirements-dev.txt
+  requirements-torch.txt
+  requirements.lock
   app/
     main.py
     config.py
+    defaults.py
     runtime_setup.py
     a2a/
     agents/
     analytics/
     api/
+    bootstrap/
     cache/
     dashboard/
     db/
     entity/
     ha_client/
+    knowledge/
     llm/
     mcp/
+    memory/
     middleware/
     models/
     plugins/
@@ -394,12 +408,12 @@ container/
     security/
     setup/
     util/
+    voice/
   tests/
     data/                          # Test fixtures and supporting data
     scenarios/                     # Scenario framework inputs and scenario cases
     conftest.py
     helpers.py
-    test_agents.py
     test_real_scenarios.py
 
 custom_components/
@@ -420,7 +434,6 @@ docs/
   configuration.md
   deployment.md
   plugin-development.md
-  TODO.md
   troubleshooting.md
   SubAgent/
 
@@ -450,10 +463,16 @@ This is not a single unified Pydantic settings tree. Pydantic loads the startup 
 | `CONTAINER_HOST` | `0.0.0.0` | FastAPI bind host |
 | `CONTAINER_PORT` | `8080` | FastAPI bind port |
 | `LOG_LEVEL` | `INFO` | Application log level |
-| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | ChromaDB persistence directory |
+| `CHROMADB_PERSIST_DIR` | `/data/chromadb` | Directory for the sqlite-vec databases (`entity_vectors.db`, `cache.db`); legacy variable name |
 | `SQLITE_DB_PATH` | `/data/agent_assist.db` | SQLite database path |
 | `FERNET_KEY_PATH` | `/data/.fernet_key` | Fernet key path for secret encryption |
-| `COOKIE_SECURE` | `false` | Forces admin session and CSRF cookies onto HTTPS only |
+| `COOKIE_SECURE` | `true` | Forces admin session and CSRF cookies onto HTTPS only; `docker-compose_local.yml` defaults it to `false` |
+| `MIGRATION_BACKUP` | `true` | Takes a `VACUUM INTO` snapshot of the SQLite database before pending schema migrations; startup aborts if the snapshot fails |
+| `CORS_ORIGINS` | empty | Comma-separated CORS origins; empty disables CORS |
+| `TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs allowed to supply `X-Forwarded-For` for rate limiting |
+| `FRAME_ANCESTORS` | `'self'` | `Content-Security-Policy: frame-ancestors` source list (add the Home Assistant origin to embed the dashboard) |
+| `ENABLE_API_DOCS` | `false` | Serves `/docs`, `/redoc` and `/openapi.json` |
+| `LOG_DIR` | `/data/logs` | Directory for persisted warning logs; set in `docker-compose.yml` |
 | `HF_HUB_OFFLINE` | `0` | Compose and deployment control for offline Hugging Face model loading |
 | `HA_AGENTHUB_TAG` | `latest` | Compose and deployment image tag selector |
 
@@ -476,8 +495,8 @@ Current runtime settings are organized around these surfaces:
 
 - cache thresholds, enablement, and entry caps
 - embedding provider and model selection
-- entity matching thresholds, oversampling, and expansion behavior
-- rewrite, filler, personality, and mediation behavior
+- entity matching thresholds, expansion behavior, and token preselection
+- rewrite, filler, personality, and mediation behavior (mediation and merge have separate reasoning-effort settings)
 - communication mode and stream behavior
 - agent timeouts and iteration limits
 - home context and entity-index sync behavior
@@ -491,9 +510,8 @@ Selected seeded defaults that materially shape behavior:
 | --- | --- |
 | `embedding.provider` | `local` |
 | `embedding.local_model` | `intfloat/multilingual-e5-base` |
-| `cache.routing.threshold` | `0.92` |
-| `cache.response.threshold` | `0.95` |
-| `cache.response.partial_threshold` | `0.80` |
+| `cache.routing.semantic_threshold` | `0.92` |
+| `cache.action.semantic_threshold` | `0.95` |
 | `entity_matching.confidence_threshold` | `0.60` |
 | `a2a.default_timeout` | `10` |
 | `a2a.max_iterations` | `3` |
@@ -529,7 +547,7 @@ Entity-index maintenance is currently described by startup priming, Home Assista
 
 ### Scalability
 
-- the current design scales within a single container process with persistent SQLite and ChromaDB storage
+- the current design scales within a single container process with persistent SQLite and sqlite-vec storage
 - the A2A abstraction keeps transport boundaries clean, but distributed transport is still roadmap work rather than current deployment reality
 
 ---
