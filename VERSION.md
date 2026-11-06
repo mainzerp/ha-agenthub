@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 3.16.0
+**Current Version:** 3.17.0
 
 ## Recent Changes
 
-(tracking changes since 3.16.0)
+(tracking changes since 3.17.0)
 
 ## Version History
+
+### 3.17.0 (MINOR) -- own entity names under HA 2026.11 naming, separate mediation and merge reasoning, docs aligned with the code
+
+(commits 21308af, 3cf0207, ed65471, e88e858)
+
+- Feat (entity): an entity the owner named is matched, listed and spoken by its own name. Since Home Assistant 2026.11 the `friendly_name` of a renamed entity is "<device name> <own name>" (for example "Dimmer (Unterverteilung Gäste) (ABB700C7FF30) Wohnzimmer"), and AgentHub indexed that string unchanged, so technical device names reached keyword recall, candidate lists and replies. The index now uses the registry's user-set name when the `friendly_name` is exactly that composition; integration-named entities, a device's main entity, names HA's migration froze, `homeassistant: customize` names and older HA versions keep HA's name. A collision guard keeps HA's names when own names would clash within a domain. The user names come from the existing `config/entity_registry/list` read (no new HA call). An index name change deletes the entity's cache rows with the new reason `entity_name_changed`; expect one batch of these on the first sync after the upgrade. State queries and device lists of the light, cover, climate, media, music, security and vacuum agents, presence queries and wake-briefing sensors use the same name. The Entity Index page and match preview show the index name and, when different, HA's `friendly_name` (`ha_friendly_name`).
+- Feat (llm): personality mediation and the multi-agent merge get their own reasoning setting: `mediation.reasoning_effort` (mediation, streamed and blocking, and template localization) and `mediation.merge_reasoning_effort` (merge), values none, low, medium, high. Both are seeded empty, which inherits the orchestrator agent config as before, so nothing changes until set. `mediation.*` settings now apply without a restart, and every `llm_provider_call` span records the effective `reasoning_effort`. The Personality page has two dropdowns (with a hint when litellm does not list the model as reasoning-capable) and no longer allows saving before the page has loaded, which could overwrite the personality prompt with empty values.
+- Docs: drift checks of architecture, API reference, configuration, project definition, troubleshooting and user guide against the code, with every finding re-verified and fixed: endpoint paths, request bodies, response fields and status codes; which settings apply without a restart; seeded keys without effect and unseeded keys; seeded agent defaults; the dashboard pages and settings categories as they exist (no alias editor, no visibility-rule editor, no timer or event creation in the dashboard); request-flow and matching-pipeline order. Known limitation documented: Home Assistant voice aliases are not read today.
+- Upgrade: no migration. The two mediation settings rows are seeded on start. The first entity sync re-embeds only entities whose name changes.
+- Verification: container suite on each feature branch (entity names: 5483 passed; mediation reasoning: 5458 passed), and the full gate `scripts/ci.py` on the release commit (container suite 5515 passed, coverage 86.81%, bridge suite 337 passed, Ruff, self-docs and card sync, lock check, bandit, pip-audit, docker build and smoke test, trivy). Not verified: real HA 2026.11 registry payloads, the Entity Index and Personality pages in a browser, and a provider call with `reasoning_effort` none for mediation.
 
 ### 3.16.0 (MINOR) -- presence agent, camera streams on screens, calendar and ai_task fixes, ring sounds, timer history
 
