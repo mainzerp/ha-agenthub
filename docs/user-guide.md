@@ -196,7 +196,7 @@ Where the rest lives:
 
 Use this page when commands match the wrong device or no device at all.
 
-**Naming entities** -- give the entities you talk to their own name in Home Assistant (entity settings, *Name*). An entity you named is matched and spoken by that name, whatever its device is called: Home Assistant 2026.11 shows it as "device name + entity name", but HA-AgentHub drops the device name again. An entity without its own name keeps Home Assistant's name, and a device's main entity is called by the device name, so name the device well for those. If an entity's own name would equal the name of another entity of the same kind (two media players, two lights), it keeps Home Assistant's full name with the device name so the two stay distinguishable; give them distinct names. Names Home Assistant froze in the 2026.11 upgrade and names set with `customize` are used as they are.
+**Naming entities** -- give the entities you talk to their own name in Home Assistant (entity settings, *Name*). An entity with its own name (the one you set, or the one the integration gives it, as shown in the entity settings) is matched and spoken by that name, whatever its device is called: Home Assistant 2026.11 shows it as "device name + entity name", but HA-AgentHub drops the device name again. A device's main entity is called by the device name, so name the device well for those. If an entity's own name would equal the name of another entity of the same kind (two media players, two lights), it keeps Home Assistant's full name with the device name so the two stay distinguishable; give them distinct names. Names Home Assistant froze in the 2026.11 upgrade and names set with `customize` are used as they are.
 
 ### MCP Servers
 

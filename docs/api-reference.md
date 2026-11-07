@@ -1226,7 +1226,7 @@ empty, `diagnostics` (`reason`: `unknown`, `no_entities_of_allowed_domains`
 or `filtered_out`; `allowed_domains`; `domain_counts`).
 
 `deterministic.friendly_name` and each `hybrid[].friendly_name` carry the
-index name (the entity's own name for a user-named device entity, see
+index name (the entity's own name for a device entity that has one, see
 [Architecture](architecture.md#entity-names)); `ha_friendly_name` carries
 Home Assistant's `friendly_name` attribute when it differs, else `null`.
 

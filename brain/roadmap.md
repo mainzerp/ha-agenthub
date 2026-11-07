@@ -42,21 +42,27 @@ Live pipeline in board format — headings are columns, cards are
 ## Testing
 
 - Own entity names under HA 2026.11 naming · priority: P1 · area: entity-resolution
-  Outcome: an entity the owner named is matched, listed and spoken by its own
-  name when HA's `friendly_name` is exactly "device name + own name" (HA
-  2026.11, e.g. `_ Wohnzimmer` -> `Wohnzimmer`); integration names, main
-  entities, frozen and customize names keep HA's name; a collision guard keeps
+  Outcome: an entity with an own name (registry `name`, else the
+  integration's `original_name`, as HA's `entity_name()`) is matched, listed
+  and spoken by it when HA's `friendly_name` is exactly "device name + own
+  name" (HA 2026.11); main entities, frozen and customize names keep HA's
+  name; a collision guard keeps
   HA's names when own names would clash in a domain; changed names delete the
   entity's cache rows (`entity_name_changed`). Audit plan DEV-19, stage 1
-  (Decisions 2026-11-06, N1).
-  Review target: branch `feat/entity-own-names` (uncommitted working tree,
-  `container/app/entity/naming.py`). Passed: ruff, 56 new tests, container
-  suite 5483 passed / 0 failed; doc drift checks run and naming text fixed.
-  Not run: real HA 2026.11 payloads, dashboard in a browser.
+  (Decisions 2026-11-06 N1, 2026-11-07).
+  Status: v3.17.0 live; live check 2026-11-07 found 15 entities renamed but
+  13 free@home entities (name only in `original_name`, e.g.
+  `light.wohnzimmer`) still device-prefixed. Fix in the working tree on
+  `main`: `parse_entity_registry_rows` (`ha_client/websocket.py`) falls back
+  to `original_name`; not committed. Passed: ruff, container suite 5516
+  passed / 0 failed, naming code run on live HA registry data (read-only):
+  28 of 28 device-prefixed controllable entities get their own name. Not run:
+  match preview on the local instance (its Docker network cannot reach HA).
   Needs user verification: after deploy, Entity Index match preview for
-  "Wohnzimmer" shows `light.wohnzimmer` with name "Wohnzimmer" and HA's
-  `_ Wohnzimmer` underneath; a voice "Wohnzimmer aus" answers without a
-  device prefix; expect one batch of `entity_name_changed` cache deletions.
+  "Wohnzimmer" (domain light) shows `light.wohnzimmer` named "Wohnzimmer" with
+  HA's "Dimmer (Unterverteilung Gäste) (ABB700C7FF30) Wohnzimmer" underneath;
+  same for `cover.kuppel_bad` and the two Wohnzimmer radiators; a voice
+  "Wohnzimmer aus" answers without a device prefix.
 - Own reasoning settings for mediation and merge · priority: P1 · area: llm
   Outcome: `mediation.reasoning_effort` (mediation, localization) and
   `mediation.merge_reasoning_effort` (multi-agent merge), seeded empty =

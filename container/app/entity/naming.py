@@ -1,13 +1,15 @@
 """Entity name derivation for the entity index.
 
 Since Home Assistant 2026.11 the ``friendly_name`` state attribute of an
-entity the user named is ``"<device name> <user name>"``. The entity index
-matches and speaks such an entity by its own (user-set) name instead. Every
-other entity keeps HA's ``friendly_name`` unchanged: integration-named
-entities, a device's main entity (no own name; its ``friendly_name`` is the
-device name), entities without a device, names HA's migration froze
-(``compat_name``), ``homeassistant: customize`` overrides, and every older HA
-version, where a user-set name already is the whole ``friendly_name``.
+entity with a name of its own is ``"<device name> <own name>"``. The entity
+index matches and speaks such an entity by its own name instead, the name HA's
+``entity_name()`` template returns: the user-set registry ``name``, else the
+integration's ``original_name``. Every other entity keeps HA's
+``friendly_name`` unchanged: a device's main entity (no own name; its
+``friendly_name`` is the device name), entities without a device, names HA's
+migration froze (``compat_name``), ``homeassistant: customize`` overrides, and
+every older HA version, where the own name already is the whole
+``friendly_name``.
 
 Pure functions without I/O. Language-neutral: only HA's own names are
 compared, no word lists.
@@ -40,9 +42,9 @@ def name_fold_key(name: str) -> str:
 
 
 def stripped_own_name(friendly_name: Any, user_name: Any, device_name: Any) -> str | None:
-    """Return the user-set own name when HA prefixed it with the device name, else None.
+    """Return the entity's own name when HA prefixed it with the device name, else None.
 
-    All must hold: ``user_name`` (the registry ``name``) is a non-empty string,
+    All must hold: ``user_name`` (the own name: registry ``name``, else ``original_name``) is a non-empty string,
     ``device_name`` (``name_by_user`` or ``name`` of the entity's device) is a
     non-empty string, and ``friendly_name`` equals ``f"{device_name} {user_name}"``
     after whitespace normalization. Anything else (no user name, main entity,

@@ -153,7 +153,7 @@ class HARestClient:
         # alias and device enrichment for every entity.
         self._registry_last_good: dict[str, Any] = {}
         # Last successfully fetched entity registry (hidden/disabled ids and
-        # user-set names); used as a fallback so a transient WS outage cannot
+        # own entity names); used as a fallback so a transient WS outage cannot
         # wipe hidden filtering or the entities' own names.
         self._last_entity_registry: EntityRegistryInfo | None = None
 
@@ -735,7 +735,7 @@ class HARestClient:
         return self._last_entity_registry is not None
 
     async def get_entity_registry(self) -> EntityRegistryInfo:
-        """Return hidden/disabled ids and user-set names from HA's entity registry.
+        """Return hidden/disabled ids and own entity names from HA's entity registry.
 
         HA only exposes the entity registry via WebSocket
         (``config/entity_registry/list``), so one WS round trip serves both.
@@ -768,12 +768,12 @@ class HARestClient:
             )
         if not isinstance(result, EntityRegistryInfo):
             # A failed fetch must never look like "no hidden entities" or
-            # "no user names": do not cache it, fall back to the last known data.
+            # "no own names": do not cache it, fall back to the last known data.
             return self._last_entity_registry if self._last_entity_registry is not None else EntityRegistryInfo()
         self._last_entity_registry = result
         self._registry_cache_put("entity_registry", result)
         logger.info(
-            "Fetched %d hidden/disabled entities and %d user-set entity names from HA registry",
+            "Fetched %d hidden/disabled entities and %d own entity names from HA registry",
             len(result.hidden_ids),
             len(result.user_names),
         )

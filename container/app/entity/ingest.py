@@ -118,7 +118,7 @@ def state_to_entity_index_entry(
     never carries ``area_id`` inside attributes, so this lookup is
     consulted first and the attrs ``area_id`` is used only as a
     fallback (kept for snapshot-fixture compatibility).
-    ``user_name_lookup`` maps ``entity_id`` -> user-set registry name and
+    ``user_name_lookup`` maps ``entity_id`` -> own name (registry name, else original_name) and
     ``name_suppressed`` holds the ids whose own name collides (see
     :mod:`app.entity.naming`): together with ``device_lookup`` they decide
     whether ``friendly_name`` carries the entity's own name or HA's

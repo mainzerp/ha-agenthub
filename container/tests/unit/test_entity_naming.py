@@ -46,8 +46,8 @@ class TestStrippedOwnName:
         assert stripped_own_name("Innenhof", "Innenhof", "Aktor (Unterverteilung Gäste) (ABB2B9192751)") is None
         assert choose_entity_name("Innenhof", "Innenhof", "Aktor (X) (S2)") == "Innenhof"
 
-    def test_integration_name_keeps_ha_name(self):
-        """No user-set name (registry name None): the integration name stays."""
+    def test_no_own_name_keeps_ha_name(self):
+        """Neither a registry name nor an integration name: HA's name stays."""
         assert stripped_own_name(f"{DIMMER} Kanal A", None, DIMMER) is None
         assert choose_entity_name(f"{DIMMER} Kanal A", None, DIMMER) == f"{DIMMER} Kanal A"
 
@@ -164,6 +164,9 @@ class TestRegistryRows:
         {"entity_id": "light.empty", "name": ""},
         {"entity_id": "light.hidden", "name": "Versteckt", "hidden_by": "user"},
         {"entity_id": "light.disabled", "disabled_by": "integration"},
+        {"entity_id": "light.integration", "name": None, "original_name": "Wohnzimmer Lichtband"},
+        {"entity_id": "light.renamed", "name": "Innenhof Lichtband", "original_name": "Innenhof Lichband"},
+        {"entity_id": "light.blank_user", "name": " ", "original_name": "Kuppel Bad"},
         {"name": "No id"},
         "not-a-row",
     ]
@@ -171,7 +174,21 @@ class TestRegistryRows:
     def test_parse_extracts_hidden_ids_and_user_names(self):
         info = parse_entity_registry_rows(self.ROWS)
         assert info.hidden_ids == {"light.hidden", "light.disabled"}
-        assert info.user_names == {"light.wohnzimmer": "Wohnzimmer", "light.hidden": "Versteckt"}
+        assert info.user_names == {
+            "light.wohnzimmer": "Wohnzimmer",
+            "light.hidden": "Versteckt",
+            "light.integration": "Wohnzimmer Lichtband",
+            "light.renamed": "Innenhof Lichtband",
+            "light.blank_user": "Kuppel Bad",
+        }
+
+    def test_integration_name_is_stripped_like_entity_name(self):
+        """free@home names entities via original_name only; HA's entity_name() returns it without the device."""
+        info = parse_entity_registry_rows(
+            [{"entity_id": "light.wohnzimmer", "name": None, "original_name": "Wohnzimmer"}]
+        )
+        own = info.user_names.get("light.wohnzimmer")
+        assert choose_entity_name(f"{DIMMER} Wohnzimmer", own, DIMMER) == "Wohnzimmer"
 
     @pytest.mark.asyncio
     async def test_ws_client_one_round_trip_serves_both_views(self):

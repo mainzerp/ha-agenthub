@@ -217,7 +217,7 @@ def _store_entity_lookups(
     The dict is rebuilt and assigned in a single statement so concurrent
     readers (notably ``on_state_changed``) always observe a consistent
     snapshot of area/alias/device/area_id lookups, never a partially
-    populated one. ``user_name`` (entity_id -> user-set registry name) and
+    populated one. ``user_name`` (entity_id -> own name: registry name, else original_name) and
     ``name_suppressed`` (ids whose own name collides, computed over the full
     snapshot) let incremental ingests apply the snapshot's naming decision
     in O(1).
@@ -233,7 +233,7 @@ def _store_entity_lookups(
 
 
 async def _fetch_entity_registry(ha_client: HARestClient) -> tuple[set[str], dict[str, str]]:
-    """Hidden/disabled ids and user-set entity names from one entity-registry read.
+    """Hidden/disabled ids and own entity names from one entity-registry read.
 
     Clients without ``get_entity_registry`` (test doubles) fall back to
     ``get_hidden_entity_ids`` with no user names, which keeps HA's
@@ -380,7 +380,7 @@ def _hidden_ids_loaded(ha_client: HARestClient | None) -> bool:
 
 
 async def _registry_for_first_snapshot(app: FastAPI, ha_client: HARestClient) -> tuple[set[str], dict[str, str]]:
-    """Hidden/disabled entity ids and user-set names for the first entity-index snapshot.
+    """Hidden/disabled entity ids and own entity names for the first entity-index snapshot.
 
     HA exposes the entity registry only over the WebSocket, which usually
     connects after the prime starts. Installing the snapshot before the
@@ -940,7 +940,7 @@ async def _refresh_registry_entities(
 ) -> list[str]:
     """Refresh or remove entity-index rows affected by a HA registry event.
 
-    Publishes fresh lookups, including the user-set names and the
+    Publishes fresh lookups, including the own entity names and the
     name-collision suppression set recomputed over the whole index (the
     event's entities with their fresh HA state, every other entity with its
     stored HA friendly_name; O(n), no extra HA call). Returns the ids of
@@ -1226,7 +1226,7 @@ async def setup_entity_observers(
 
     # WS-HIDDEN-SYNC: the prime waits (bounded) for the WS to read the hidden
     # list before its first snapshot. This task runs after the prime and
-    # re-syncs the index when the hidden list or the user-set entity names it
+    # re-syncs the index when the hidden list or the own entity names it
     # reads over the WS differ from the ones the snapshot was built with
     # (degraded prime, or registry changed meanwhile).
     async def _deferred_hidden_entity_sync() -> None:

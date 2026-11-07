@@ -26,8 +26,9 @@ class EntityRegistryInfo:
     """What AgentHub keeps from one ``config/entity_registry/list`` response.
 
     ``hidden_ids``: entities HA hides or disables. ``user_names``: entity_id ->
-    the user-set registry ``name`` (rows whose ``name`` is None or blank are
-    absent: integration-named and main entities).
+    the entity's own name as HA's ``entity_name()`` sees it: the user-set
+    registry ``name``, else the integration's ``original_name``. Rows with
+    neither (a device's main entity) are absent.
     """
 
     hidden_ids: frozenset[str] = frozenset()
@@ -35,7 +36,7 @@ class EntityRegistryInfo:
 
 
 def parse_entity_registry_rows(rows: list[Any]) -> EntityRegistryInfo:
-    """Extract hidden/disabled ids and user-set names from registry list rows."""
+    """Extract hidden/disabled ids and own entity names from registry list rows."""
     hidden: set[str] = set()
     user_names: dict[str, str] = {}
     for row in rows:
@@ -46,9 +47,11 @@ def parse_entity_registry_rows(rows: list[Any]) -> EntityRegistryInfo:
             continue
         if row.get("hidden_by") or row.get("disabled_by"):
             hidden.add(eid)
-        name = row.get("name")
-        if isinstance(name, str) and name.strip():
-            user_names[eid] = name
+        for key in ("name", "original_name"):
+            name = row.get(key)
+            if isinstance(name, str) and name.strip():
+                user_names[eid] = name
+                break
     return EntityRegistryInfo(hidden_ids=frozenset(hidden), user_names=user_names)
 
 

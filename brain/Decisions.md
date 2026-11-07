@@ -4,6 +4,20 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-07 — Own names include integration names
+
+- **An entity's own name is what HA's `entity_name()` returns: the
+  user-set registry `name`, else the integration's `original_name`.** This
+  replaces the 2026-11-06 exception that kept the device name for
+  integration-named entities. Rationale: the owner asked for `entity_name()`
+  semantics; HA's entity settings show the integration name as the entity's
+  name, so free@home entities such as `light.wohnzimmer` ("Wohnzimmer") could
+  not be given an own name and kept "Dimmer (Unterverteilung Gäste)
+  (ABB700C7FF30) Wohnzimmer" (13 controllable entities on the live instance).
+  Accepted cost: an integration name that is meaningful only with its device
+  (Awtrix "Matrix") is matched by that short name; the collision guard still
+  keeps HA's names when two entities of one domain would share a name.
+
 ## 2026-11-06 — Audit follow-up: reply language order, performance guardrail
 
 - **Reply language order: HA pipeline language, then the AgentHub `language`
