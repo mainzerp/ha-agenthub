@@ -15,6 +15,7 @@ from pydantic import BaseModel, ValidationError, field_validator, model_validato
 
 from app.agents.timer_scheduler import HISTORY_RETENTION_DAYS
 from app.db.repository import ScheduledTimersRepository
+from app.ha_client.home_context import format_epoch_in_zone, parse_zone, resolve_home_zone
 
 from ._shared import _bool_from_setting
 
@@ -289,6 +290,9 @@ async def get_timers_info(request: Request):
             logger.debug("Failed to load area registry", exc_info=True)
             area_registry = {}
 
+    # Cached HomeContext lookup (no extra HA call while fresh); None when the home zone is unknown.
+    home_zone = await resolve_home_zone(ha_client)
+
     rows = []
     if scheduler is not None:
         with contextlib.suppress(Exception):
@@ -303,13 +307,17 @@ async def get_timers_info(request: Request):
                     alarm_payload = json.loads(row.get("payload_json") or "{}")
                 except json.JSONDecodeError:
                     alarm_payload = {}
+                if not isinstance(alarm_payload, dict):
+                    alarm_payload = {}
                 recurrence = _normalize_alarm_recurrence_for_response(alarm_payload.get("recurrence"))
+                # Home time first; the row's own zone, then the container zone, only when the home zone is unknown.
+                display_zone = home_zone or parse_zone(alarm_payload.get("timezone"))
                 alarms.append(
                     {
                         "id": row.get("id"),
                         "entity_id": f"agenthub_alarm:{row.get('id')}",
                         "name": row.get("logical_name") or "alarm",
-                        "state": datetime.fromtimestamp(fires_at).strftime("%Y-%m-%d %H:%M:%S"),
+                        "state": format_epoch_in_zone(fires_at, display_zone),
                         "type": "internal",
                         "source": "internal",
                         "fires_at": fires_at,
@@ -381,6 +389,8 @@ async def get_timers_info(request: Request):
     return {
         "timers": timers,
         "alarms": alarms,
+        # IANA name of the zone used for formatted times; None when the home zone is unknown.
+        "timezone": home_zone.key if isinstance(home_zone, ZoneInfo) else None,
     }
 
 

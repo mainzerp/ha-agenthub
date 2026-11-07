@@ -13,10 +13,13 @@ import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+from app.agents.background_actions import handle_background_event
 from app.agents.timer_scheduler import TimerScheduler
 from app.db.repository import ScheduledTimersRepository
+from app.ha_client.rest import HARestClient
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -49,6 +52,16 @@ def _make_scheduler(*, gateway=None) -> tuple[TimerScheduler, MagicMock]:
         dispatcher=dispatcher,
     )
     return scheduler, dispatcher
+
+
+async def _wait_for_state(timer_id: str, state: str, *, timeout: float = 5.0) -> dict | None:
+    """Poll the row in real time until it reaches ``state`` or ``timeout`` passes; return the last row read."""
+    deadline = time.monotonic() + timeout
+    while True:
+        row = await ScheduledTimersRepository.get(timer_id)
+        if (row and row["state"] == state) or time.monotonic() >= deadline:
+            return row
+        await asyncio.sleep(0.01)
 
 
 class TestSchedulePersistence:
@@ -87,11 +100,7 @@ class TestFireOnDeadline:
                 duration_seconds=0,
                 payload={"notification_message": "boom"},
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(timer_id)
-                if row and row["state"] == "fired":
-                    break
+            row = await _wait_for_state(timer_id, "fired")
             assert row["state"] == "fired"
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "timer_notification"
@@ -375,7 +384,7 @@ class TestRestartRecovery:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr("app.agents.timer_scheduler._STARTUP_RECOVERY_RETRY_DELAY_SECONDS", 0.01)
                 await sched.start()
-                for _ in range(60):
+                for _ in range(500):
                     if "retry-rehydrate-id" in sched._tasks:
                         break
                     await asyncio.sleep(0.01)
@@ -410,7 +419,7 @@ class TestRestartRecovery:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr("app.agents.timer_scheduler._STARTUP_RECOVERY_RETRY_DELAY_SECONDS", 0.01)
                 await sched.start()
-                for _ in range(60):
+                for _ in range(500):
                     if repo.mark_fired.await_count >= 1:
                         break
                     await asyncio.sleep(0.01)
@@ -437,11 +446,7 @@ class TestKindDispatch:
                 origin_area="kitchen",
                 payload={"language": "de"},
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(tid)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(tid, "fired")
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "timer_notification"
             payload = _dispatch_payload(gateway)
@@ -467,11 +472,7 @@ class TestKindDispatch:
                     "language": "de",
                 },
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(tid)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(tid, "fired")
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "delayed_action"
             payload = _dispatch_payload(gateway)
@@ -496,11 +497,7 @@ class TestKindDispatch:
                 origin_area="bedroom",
                 payload={"media_player": "media_player.bedroom", "agent_id": "timer-agent"},
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(tid)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(tid, "fired")
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "sleep_media_stop"
             payload = _dispatch_payload(gateway)
@@ -529,11 +526,7 @@ class TestKindDispatch:
                     "timezone": "Europe/Berlin",
                 },
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(tid)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(tid, "fired")
 
             gateway.dispatch.assert_awaited_once()
             assert _dispatch_event_type(gateway) == "alarm_notification"
@@ -578,11 +571,7 @@ class TestKindDispatch:
                     },
                 )
 
-                for _ in range(30):
-                    await asyncio.sleep(0)
-                    row = await ScheduledTimersRepository.get(tid)
-                    if row and row["state"] == "fired":
-                        break
+                row = await _wait_for_state(tid, "fired")
 
             row = await ScheduledTimersRepository.get(tid)
             assert row and row["state"] == "fired"
@@ -706,11 +695,7 @@ class TestTimerNameDisplay:
                     origin_area="kitchen",
                     payload={"notification_message": "Eggs done!", "language": "en"},
                 )
-                for _ in range(20):
-                    await asyncio.sleep(0)
-                    row = await ScheduledTimersRepository.get(tid)
-                    if row and row["state"] == "fired":
-                        break
+                await _wait_for_state(tid, "fired")
 
                 payloads = _dispatch_args_list(gateway)
                 payload = payloads[-1]
@@ -730,11 +715,7 @@ class TestTimerNameDisplay:
                 origin_area="kitchen",
                 payload={"notification_message": "Eggs done!", "language": "en"},
             )
-            for _ in range(20):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(tid)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(tid, "fired")
             gateway.dispatch.assert_awaited_once()
             payload = _dispatch_payload(gateway)
             assert payload["timer_name"] == "egg timer: Eggs done!"
@@ -820,11 +801,7 @@ class TestSchedulerRegressions:
                         },
                     },
                 )
-                for _ in range(30):
-                    await asyncio.sleep(0)
-                    row = await ScheduledTimersRepository.get(tid)
-                    if row and row["state"] == "fired":
-                        break
+                row = await _wait_for_state(tid, "fired")
 
             row = await ScheduledTimersRepository.get(tid)
             assert row and row["state"] == "fired"
@@ -917,3 +894,250 @@ class TestHistory:
         await sched._purge_history()
 
         assert repo.purge_terminal_older_than.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# FIX-22: rings survive a short Home Assistant outage
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    """Stands in for ``time`` inside ``app.agents.timer_scheduler``; tests advance ``now`` explicitly."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+    @staticmethod
+    def monotonic() -> float:
+        return time.monotonic()
+
+
+class _FakeHomeAssistant:
+    """httpx mock transport for a real ``HARestClient``.
+
+    While the simulated clock is before ``down_until`` every request is refused before it is sent
+    (``httpx.ConnectError``), and each refused attempt advances the clock by one 15 s retry interval.
+    ``service_error`` makes service calls fail after the request was sent.
+    """
+
+    def __init__(self, clock: _FakeClock, *, down_until: float, service_error: Exception | None = None) -> None:
+        self.clock = clock
+        self.down_until = down_until
+        self.service_error = service_error
+        self.refused = 0
+        self.service_calls: list[tuple[str, dict]] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if self.clock.now < self.down_until:
+            self.refused += 1
+            self.clock.now += 15
+            raise httpx.ConnectError("Connection refused", request=request)
+        if request.url.path == "/api/":
+            return httpx.Response(200, json={"message": "API running."})
+        if request.url.path.startswith("/api/services/"):
+            self.service_calls.append((request.url.path, json.loads(request.content or b"{}")))
+            if self.service_error is not None:
+                raise self.service_error
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    def messages(self) -> list[str]:
+        return [str(data.get("message") or "") for _path, data in self.service_calls]
+
+
+class _BackgroundGateway:
+    """A2A dispatcher stand-in that runs background events through the real handler against the fake HA."""
+
+    def __init__(self, ha_client: HARestClient) -> None:
+        self.ha_client = ha_client
+        self.dispatched: list[str] = []
+
+    async def dispatch(self, request):
+        task = request.params["task"]
+        event = task.context.background_event
+        self.dispatched.append(event.event_type)
+        return await handle_background_event(event, context=task.context, ha_client=self.ha_client)
+
+
+@pytest.fixture
+async def ha_outage(db_repository, monkeypatch):
+    """Scheduler wired to a fake HA behind a real REST client, with a simulated clock and a fast retry interval."""
+    clock = _FakeClock(float(int(time.time())))
+    monkeypatch.setattr("app.agents.timer_scheduler.time", clock)
+    monkeypatch.setattr("app.agents.timer_scheduler._HA_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr("app.agents.background_actions._generate_tts_message", AsyncMock(return_value=None))
+    created: list[tuple[TimerScheduler, HARestClient]] = []
+
+    def _build(*, down_for: float, service_error: Exception | None = None):
+        fake_ha = _FakeHomeAssistant(clock, down_until=clock.now + down_for, service_error=service_error)
+        ha_client = HARestClient()
+        ha_client._client = httpx.AsyncClient(base_url="http://ha.test", transport=httpx.MockTransport(fake_ha.handler))
+        gateway = _BackgroundGateway(ha_client)
+        sched = TimerScheduler(ScheduledTimersRepository, dispatcher=gateway)
+        created.append((sched, ha_client))
+        return sched, gateway, fake_ha
+
+    yield clock, _build
+    for sched, ha_client in created:
+        await sched.stop()
+        await ha_client.close()
+
+
+async def _wait_for_task_end(sched: TimerScheduler, timer_id: str, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while timer_id in sched._tasks and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert timer_id not in sched._tasks
+
+
+_DAILY = {"freq": "daily", "interval": 1, "anchor_time": "07:00:00", "timezone": "UTC"}
+
+
+class TestHaOutageRetry:
+    async def test_ring_during_short_outage_rings_after_reconnect(self, ha_outage):
+        _clock, build = ha_outage
+        sched, gateway, fake_ha = build(down_for=90)
+        timer_id = await sched.schedule(
+            logical_name="pasta", kind="plain", duration_seconds=0, payload={"language": "en"}
+        )
+
+        await _wait_for_task_end(sched, timer_id)
+
+        row = await ScheduledTimersRepository.get(timer_id)
+        assert row["state"] == "fired"
+        assert fake_ha.refused == 6
+        assert gateway.dispatched == ["timer_notification"] * 7
+        assert fake_ha.messages() == ["Timer pasta has finished"]
+
+    async def test_ring_during_long_outage_is_missed_with_one_notice(self, ha_outage):
+        _clock, build = ha_outage
+        sched, _gateway, fake_ha = build(down_for=600)
+        timer_id = await sched.schedule(
+            logical_name="pasta", kind="plain", duration_seconds=0, payload={"language": "en"}
+        )
+
+        await _wait_for_task_end(sched, timer_id)
+
+        row = await ScheduledTimersRepository.get(timer_id)
+        assert row["state"] == "expired"
+        messages = fake_ha.messages()
+        assert len(messages) == 1
+        assert "missed" in messages[0] and "timer 'pasta'" in messages[0]
+        assert await ScheduledTimersRepository.list_pending() == []
+
+    async def test_timeout_after_send_counts_as_delivered(self, ha_outage):
+        _clock, build = ha_outage
+        sched, gateway, fake_ha = build(down_for=0, service_error=httpx.ReadTimeout("read timed out"))
+        timer_id = await sched.schedule(
+            logical_name="pasta", kind="plain", duration_seconds=0, payload={"language": "en"}
+        )
+
+        await _wait_for_task_end(sched, timer_id)
+
+        assert (await ScheduledTimersRepository.get(timer_id))["state"] == "fired"
+        assert gateway.dispatched == ["timer_notification"]
+        assert len(fake_ha.service_calls) == 1
+
+    async def test_dispatch_timeout_counts_as_delivered(self, db_repository):
+        sched, gateway = _make_scheduler()
+        gateway.dispatch.side_effect = TimeoutError()
+        try:
+            timer_id = await sched.schedule(logical_name="pasta", kind="plain", duration_seconds=0)
+            row = await _wait_for_state(timer_id, "fired")
+            assert row["state"] == "fired"
+            gateway.dispatch.assert_awaited_once()
+        finally:
+            await sched.stop()
+
+    async def test_non_connection_error_stays_terminal(self, ha_outage):
+        _clock, build = ha_outage
+        server_error = httpx.HTTPStatusError(
+            "500", request=httpx.Request("POST", "http://ha.test"), response=httpx.Response(500)
+        )
+        sched, gateway, fake_ha = build(down_for=0, service_error=server_error)
+        timer_id = await sched.schedule(
+            logical_name="pasta", kind="plain", duration_seconds=0, payload={"language": "en"}
+        )
+
+        await _wait_for_task_end(sched, timer_id)
+
+        assert (await ScheduledTimersRepository.get(timer_id))["state"] == "fired"
+        assert gateway.dispatched == ["timer_notification"]
+        assert fake_ha.refused == 0
+
+    @pytest.mark.parametrize(("down_for", "final_state"), [(90, "fired"), (600, "expired")])
+    async def test_recurring_alarm_schedules_next_occurrence_once(self, ha_outage, monkeypatch, down_for, final_state):
+        clock, build = ha_outage
+        next_fire = int(clock.now) + 86400
+        monkeypatch.setattr(
+            "app.agents.timer_scheduler._compute_next_recurring_fire_epoch", lambda *_args, **_kwargs: next_fire
+        )
+        sched, _gateway, fake_ha = build(down_for=down_for)
+        timer_id = await sched.schedule(
+            logical_name="Wake",
+            kind="alarm",
+            duration_seconds=0,
+            origin_area="bedroom",
+            payload={"alarm_label": "Wake", "language": "en", "recurrence": dict(_DAILY)},
+        )
+
+        await _wait_for_task_end(sched, timer_id)
+
+        assert (await ScheduledTimersRepository.get(timer_id))["state"] == final_state
+        pending = await ScheduledTimersRepository.list_pending_for(logical_name="Wake", kinds={"alarm"})
+        assert len(pending) == 1
+        assert pending[0]["fires_at"] == next_fire
+        assert pending[0]["origin_area"] == "bedroom"
+        next_payload = json.loads(pending[0]["payload_json"])
+        assert next_payload["recurrence"]["freq"] == "daily"
+        assert next_payload["scheduled_for_epoch"] == next_fire
+        assert len(fake_ha.messages()) == 1
+
+    async def test_cancel_stops_a_retrying_ring(self, ha_outage, monkeypatch):
+        _clock, build = ha_outage
+        monkeypatch.setattr("app.agents.timer_scheduler._HA_RETRY_INTERVAL_SECONDS", 3600)
+        sched, gateway, _fake_ha = build(down_for=90)
+        timer_id = await sched.schedule(logical_name="pasta", kind="plain", duration_seconds=0)
+        deadline = time.monotonic() + 5
+        while not gateway.dispatched and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        task = sched._tasks[timer_id]
+        assert (await ScheduledTimersRepository.get(timer_id))["state"] == "pending"
+
+        assert await sched.cancel(id_=timer_id) == 1
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert task.cancelled()
+        assert (await ScheduledTimersRepository.get(timer_id))["state"] == "cancelled"
+        assert gateway.dispatched == ["timer_notification"]
+
+    async def test_startup_overdue_rows_wait_for_home_assistant(self, ha_outage):
+        clock, build = ha_outage
+        now = int(clock.now)
+        for row_id, fires_at in (("startup-ring", now - 10), ("startup-missed", now - 3600)):
+            await ScheduledTimersRepository.insert(
+                id=row_id,
+                logical_name=row_id,
+                kind="plain",
+                created_at=now - 7200,
+                fires_at=fires_at,
+                duration_seconds=60,
+                origin_device_id=None,
+                origin_area=None,
+                payload_json=json.dumps({"language": "en"}),
+            )
+        sched, _gateway, fake_ha = build(down_for=90)
+
+        await sched.start()
+        await sched.wait_for_overdue_processing()
+        await _wait_for_task_end(sched, "startup-ring")
+
+        assert (await ScheduledTimersRepository.get("startup-ring"))["state"] == "fired"
+        assert (await ScheduledTimersRepository.get("startup-missed"))["state"] == "expired"
+        messages = fake_ha.messages()
+        assert len(messages) == 2
+        assert sum("timer 'startup-missed'" in message for message in messages) == 1
+        assert sum(message == "Timer startup-ring has finished" for message in messages) == 1

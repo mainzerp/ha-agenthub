@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -135,6 +136,47 @@ class HomeContextProvider:
 
 home_context_provider = HomeContextProvider()
 
+DEFAULT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def parse_zone(name: Any) -> ZoneInfo | None:
+    """Return the ``ZoneInfo`` for ``name``, or ``None`` when it is empty or not a valid IANA zone."""
+    text = str(name or "").strip()
+    if not text:
+        return None
+    try:
+        return ZoneInfo(text)
+    except Exception:
+        return None
+
+
+async def resolve_home_zone(ha_client: Any) -> ZoneInfo | None:
+    """Return the home time zone from the cached HomeContext, or ``None`` when it is unknown.
+
+    Uses the shared provider cache (no extra Home Assistant call while the cache is fresh).
+    ``None`` means the lookup failed or the configured name is not a valid zone; callers then
+    fall back explicitly (see ``format_epoch_in_zone``). Without an HA client the zone is unknown.
+    """
+    if ha_client is None:
+        return None
+    try:
+        ctx = await home_context_provider.get(ha_client)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("Home timezone lookup failed", exc_info=True)
+        return None
+    return parse_zone(ctx.timezone)
+
+
+def format_epoch_in_zone(epoch: Any, zone: tzinfo | None, fmt: str = DEFAULT_TIME_FORMAT) -> str:
+    """Format a UNIX epoch as wall-clock time in ``zone``.
+
+    When ``zone`` is ``None`` (home zone unknown) the container's local zone is used, which
+    is the pre-existing behavior and UTC in the shipped image.
+    """
+    return datetime.fromtimestamp(int(epoch), tz=zone).strftime(fmt)
+
 
 async def populate_task_context_home_context(context: Any, ha_client: Any) -> None:
     """Populate timezone, location_name, and local_time on a TaskContext.
@@ -144,8 +186,6 @@ async def populate_task_context_home_context(context: Any, ha_client: Any) -> No
     so that a missing HA config does not block the request.
     """
     try:
-        from zoneinfo import ZoneInfo
-
         home_ctx = await home_context_provider.get(ha_client)
         context.timezone = home_ctx.timezone
         context.location_name = home_ctx.location_name

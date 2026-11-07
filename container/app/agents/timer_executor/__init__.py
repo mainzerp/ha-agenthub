@@ -134,6 +134,7 @@ async def execute_timer_action(
             span_collector=span_collector,
             area_id=area_id,
             timezone=timezone,
+            parameters=action.get("parameters") or {},
         )
 
     if action_name == "start_timer":

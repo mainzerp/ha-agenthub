@@ -320,8 +320,10 @@ Symptom: while one person enrolls alone, most samples are rejected (the satellit
 **Checks:**
 
 - The satellite or media player of the origin device or origin room must be visible to `timer-agent`; invisible targets are skipped. The default rules allow `assist_satellite` and `media_player`; if you restricted the `timer-agent` rules, keep both allowed. A skipped satellite falls back to TTS on a media player.
+- `<Kind> notification has no resolvable playback target (device_id=..., area=...)`: neither a visible satellite nor a media player of the origin device or room was found; check the origin device and the `timer-agent` visibility rules.
 - A failed satellite announce falls back to TTS on a media player of the origin device or room. When both fail, the log shows `notification was not spoken: every audio target failed`, and no voice follow-up starts.
 - After a container restart, timers and alarms that came due while it was down ring normally when at most 60 s late, otherwise they are reported once as missed; delayed device actions more than 5 minutes late are dropped (log line `Dropping overdue ...`).
+- Home Assistant was unreachable when the timer came due (restart, update): the ring is retried every 15 s for up to 5 minutes after the due time (log `Timer <id> ('<name>') could not reach Home Assistant; retrying in <n>s`), then marked missed (`... missed: Home Assistant stayed unreachable until 300s after its due time`) with one missed notice once Home Assistant is back (`Missed-timer notice for N row(s) waits for Home Assistant; retrying every 15s`). An HTTP error from Home Assistant or a proxy (for example 502 during an HA restart) counts as reached and is not retried.
 
 ## Entity Not Found with LLM Clarification
 

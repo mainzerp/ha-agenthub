@@ -1021,13 +1021,13 @@ Auth: admin session. See also `/api/admin/agents` (above) and
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/admin/timers` | List active and scheduled timers. |
+| GET | `/api/admin/timers` | Pending timers and alarms. Returns `{"timers": [...], "alarms": [...], "timezone": ...}`. `timers` entries: `id`, `logical_name`, `kind`, `duration_seconds`, `remaining_seconds`, `fires_at`, `origin_area`, `origin_device_id`, `origin_label`, `state`. `alarms` holds internal alarms (`source` `internal`, `entity_id` `agenthub_alarm:<id>`, `name`, `state`, `fires_at`, `briefing`, `is_recurring`, `recurrence`, origin fields) and legacy `input_datetime` helpers (`source` `ha_legacy`). `timezone` is the Home Assistant IANA zone (`null` when unknown); internal alarm times in `state` are formatted in that zone. |
 | GET | `/api/admin/timers/history` | Finished timers and alarms (`fired`, `expired`, `cancelled`) of the last 30 days, newest first. Query `limit` 1-500 (default 100). Returns `{"history": [...], "retention_days": 30}`; each entry has `id`, `logical_name`, `kind`, `state`, `duration_seconds`, `fires_at`, `ended_at`, `origin_label`. |
 | GET | `/api/admin/timers/recently-expired` | Compatibility endpoint (returns empty list). |
 | GET | `/api/admin/timers/satellites` | List timer satellite devices. |
 | POST | `/api/admin/timers` | Create a timer or internal alarm (`201`, `{"status": "ok", "id"}`). Body: `logical_name` (1-128 characters), `kind` (`plain`, `notification`, `delayed_action`, `sleep`, `snooze`, `alarm`), `duration_seconds` (required and positive unless `kind` is `alarm`), `fires_at` (future Unix timestamp, required for `alarm`), optional `origin_device_id`, `origin_area`. `422` for invalid input, `503` without a scheduler. |
-| PATCH | `/api/admin/timers/{timer_id}` | Update a timer. |
-| DELETE | `/api/admin/timers/{timer_id}` | Delete a timer. |
+| PATCH | `/api/admin/timers/{timer_id}` | Update a pending timer or alarm. Body (at least one): `logical_name` (1-128 characters), `fires_at` (future Unix timestamp), `duration_seconds` (positive); alarms only: `briefing`, `is_recurring`, `recurrence` (`freq` `daily` or `weekly`, `interval` >= 1, `byweekday` MO..SU, required for weekly; `is_recurring=false` clears it). Returns `{"status": "ok"}`; `404` when not found or not pending, `422` for invalid or empty bodies and alarm-only fields on timers, `503` without a scheduler. |
+| DELETE | `/api/admin/timers/{timer_id}` | Cancel a pending timer or alarm. Returns `{"status": "ok", "cancelled": <count>}`; `404` when not found or already completed, `503` without a scheduler. |
 
 Auth: admin session.
 

@@ -18,13 +18,14 @@ import logging
 import time
 import uuid
 from collections.abc import Sequence
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.a2a._request import build_send_request
 from app.db.repository import ScheduledTimersRepository
-from app.models.agent import BackgroundEvent, BackgroundTask, TaskContext
+from app.models.agent import BACKGROUND_DELIVERY_HA_UNREACHABLE, BackgroundEvent, BackgroundTask, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,21 @@ _STARTUP_RECOVERY_RETRY_DELAY_SECONDS = 2.0
 _OVERDUE_DEVICE_ACTION_MAX_SECONDS = 300
 _OVERDUE_RING_GRACE_SECONDS = 60
 _DEVICE_ACTION_KINDS = frozenset({"delayed_action", "sleep"})
+# Rings (timers and alarms) whose delivery could not reach Home Assistant at all (connection refused, DNS
+# failure, client not connected, connect timeout) stay pending and are retried at this interval until they are
+# delivered or the grace window, counted from the row's due time, ends. Then the row is marked missed
+# (``expired``) and the missed notice is sent once HA is reachable again.
+_RING_KINDS = frozenset({"plain", "notification", "snooze", "alarm"})
+_HA_RETRY_INTERVAL_SECONDS = 15
+_HA_RETRY_GRACE_SECONDS = 300
+# Delivery outcome of one fire attempt. Only ``ha_unreachable`` is retried; ``failed`` is terminal like
+# ``delivered`` (the row is marked fired).
+_OUTCOME_DELIVERED = "delivered"
+_OUTCOME_HA_UNREACHABLE = "ha_unreachable"
+_OUTCOME_FAILED = "failed"
+# Collects the delivery outcome of each background dispatch made by the current task while set; used for the
+# missed notice, whose dispatch happens inside ``_dispatch_missed``.
+_dispatch_outcomes: ContextVar[list[str] | None] = ContextVar("timer_dispatch_outcomes", default=None)
 # Finished rows (fired, expired, cancelled) stay visible as history this long; older ones are purged.
 HISTORY_RETENTION_DAYS = 30
 _HISTORY_PURGE_INTERVAL_SECONDS = 6 * 3600
@@ -240,9 +256,9 @@ class TimerScheduler:
             request_id=request_id or task.conversation_id or f"scheduler-{uuid.uuid4().hex}",
         )
         try:
-            response = await self._dispatcher.dispatch(request)
+            response = await self._dispatcher.dispatch(request) or {}
         except RuntimeError as exc:
-            return {
+            response = {
                 "speech": "",
                 "error": {
                     "code": "internal",
@@ -250,7 +266,10 @@ class TimerScheduler:
                     "recoverable": True,
                 },
             }
-        return response or {}
+        outcomes = _dispatch_outcomes.get()
+        if outcomes is not None:
+            outcomes.append(_delivery_outcome(response))
+        return response
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -630,6 +649,9 @@ class TimerScheduler:
         - ``plain`` / ``notification`` / ``snooze`` / ``alarm``: ring normally within
           ``_OVERDUE_RING_GRACE_SECONDS``; later ones are reported once, together,
           as missed. A missed recurring alarm still schedules its next occurrence.
+          A ring that cannot reach HA (HA still starting) moves to its own task,
+          which retries it like any other ring (``_fire_and_finish``); the missed
+          notice waits until HA is reachable.
         """
         now = int(time.time())
         missed: list[dict] = []
@@ -656,8 +678,10 @@ class TimerScheduler:
                     if kind == "alarm":
                         await self._schedule_next_recurrence(row, _load_payload(row))
                     continue
-                await self._fire(row)
-                await self._repo.mark_fired(timer_id, now)
+                if await self._fire_safely(row) == _OUTCOME_HA_UNREACHABLE and kind in _RING_KINDS:
+                    self._spawn_task(row)
+                    continue
+                await self._finish_fired(row)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -668,7 +692,7 @@ class TimerScheduler:
                 except Exception:
                     logger.error("Timer %s mark_fired failed on recovery", timer_id, exc_info=True)
         if missed:
-            await self._dispatch_missed(missed)
+            await self._send_missed_notice(missed)
 
     async def _dispatch_missed(self, rows: Sequence[dict]) -> None:
         """Send one consolidated notification for timers/alarms missed while offline."""
@@ -720,16 +744,11 @@ class TimerScheduler:
             delay = max(0.0, float(row["fires_at"]) - time.time())
             if delay > 0:
                 await asyncio.sleep(delay)
-            await self._fire(row)
-            await self._repo.mark_fired(timer_id, int(time.time()))
+            await self._fire_and_finish(row)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.error("Timer %s fire failed", timer_id, exc_info=True)
-            try:
-                await self._repo.mark_fired(timer_id, int(time.time()))
-            except Exception:
-                logger.error("Timer %s mark_fired failed", timer_id, exc_info=True)
         finally:
             # reschedule() replaces the task under the same id; only drop tracking that still belongs to us.
             if self._tasks.get(timer_id) is asyncio.current_task():
@@ -737,6 +756,99 @@ class TimerScheduler:
                 for ids in list(self._by_logical.values()):
                     if timer_id in ids:
                         ids.remove(timer_id)
+
+    async def _fire_and_finish(self, row: dict) -> None:
+        """Fire a due row and record its terminal state.
+
+        A ring (``_RING_KINDS``) that cannot reach HA stays pending and is retried
+        every ``_HA_RETRY_INTERVAL_SECONDS`` until ``_HA_RETRY_GRACE_SECONDS`` after
+        its due time; then it is marked missed and reported once HA is reachable.
+        Every other outcome, including a failed fire, is terminal: the row is
+        marked fired. The retry runs in the row's own task, so ``cancel``,
+        ``pause``, ``reschedule`` and ``stop`` cancel it like a sleeping timer.
+        """
+        timer_id = row["id"]
+        give_up_at = int(row.get("fires_at") or 0) + _HA_RETRY_GRACE_SECONDS
+        while True:
+            outcome = await self._fire_safely(row)
+            if outcome != _OUTCOME_HA_UNREACHABLE or row.get("kind") not in _RING_KINDS:
+                await self._finish_fired(row)
+                return
+            remaining = give_up_at - time.time()
+            if remaining <= 0:
+                logger.warning(
+                    "Timer %s (%r) missed: Home Assistant stayed unreachable until %ds after its due time",
+                    timer_id,
+                    row.get("logical_name"),
+                    _HA_RETRY_GRACE_SECONDS,
+                )
+                await self._finish_missed(row)
+                await self._send_missed_notice([row])
+                return
+            logger.warning(
+                "Timer %s (%r) could not reach Home Assistant; retrying in %ds",
+                timer_id,
+                row.get("logical_name"),
+                min(_HA_RETRY_INTERVAL_SECONDS, int(remaining)),
+            )
+            await asyncio.sleep(min(_HA_RETRY_INTERVAL_SECONDS, remaining))
+
+    async def _fire_safely(self, row: dict) -> str:
+        """Fire ``row`` and return the delivery outcome; an exception is a terminal ``failed``."""
+        try:
+            return await self._fire(row)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("Timer %s fire failed", row["id"], exc_info=True)
+            return _OUTCOME_FAILED
+
+    async def _finish_fired(self, row: dict) -> None:
+        """Mark ``row`` fired; a recurring alarm first schedules its next occurrence."""
+        await self._schedule_next_occurrence_safely(row)
+        try:
+            await self._repo.mark_fired(row["id"], int(time.time()))
+        except Exception:
+            logger.error("Timer %s mark_fired failed", row["id"], exc_info=True)
+
+    async def _finish_missed(self, row: dict) -> None:
+        """Mark ``row`` missed (``expired``); a recurring alarm first schedules its next occurrence."""
+        await self._schedule_next_occurrence_safely(row)
+        try:
+            await self._repo.mark_expired(row["id"], int(time.time()))
+        except Exception:
+            logger.error("Timer %s mark_expired failed", row["id"], exc_info=True)
+
+    async def _schedule_next_occurrence_safely(self, row: dict) -> None:
+        if row.get("kind") != "alarm":
+            return
+        try:
+            await self._schedule_next_recurrence(row, _load_payload(row))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("Recurring alarm %s: scheduling the next occurrence failed", row["id"], exc_info=True)
+
+    async def _send_missed_notice(self, rows: Sequence[dict]) -> None:
+        """Send the missed notice for ``rows`` exactly once, waiting while HA is unreachable."""
+        waiting = False
+        while True:
+            outcomes: list[str] = []
+            token = _dispatch_outcomes.set(outcomes)
+            try:
+                await self._dispatch_missed(rows)
+            finally:
+                _dispatch_outcomes.reset(token)
+            if _OUTCOME_HA_UNREACHABLE not in outcomes:
+                return
+            if not waiting:
+                waiting = True
+                logger.warning(
+                    "Missed-timer notice for %d row(s) waits for Home Assistant; retrying every %ds",
+                    len(rows),
+                    _HA_RETRY_INTERVAL_SECONDS,
+                )
+            await asyncio.sleep(_HA_RETRY_INTERVAL_SECONDS)
 
     async def _schedule_next_recurrence(self, row: dict, payload: dict) -> None:
         recurrence = _load_recurrence(payload)
@@ -759,11 +871,12 @@ class TimerScheduler:
             payload=next_payload,
         )
 
-    async def _fire(self, row: dict) -> None:
-        """Dispatch the kind-specific fire action.
+    async def _fire(self, row: dict) -> str:
+        """Dispatch the kind-specific fire action and return its delivery outcome.
 
-        Errors are logged; the timer is still marked fired by the
-        caller. Exact-once semantics surfaced to logs.
+        ``_OUTCOME_HA_UNREACHABLE`` means nothing reached Home Assistant, so a
+        retry cannot ring twice. Exceptions propagate. The caller records the
+        terminal state and schedules a recurring alarm's next occurrence.
         """
         kind = row["kind"]
         try:
@@ -780,7 +893,7 @@ class TimerScheduler:
         dispatcher = self._dispatcher
         if dispatcher is None:
             logger.warning("TimerScheduler fire skipped for %s: no dispatcher available", row["id"])
-            return
+            return _OUTCOME_FAILED
 
         if kind in ("plain", "notification"):
             message = payload.get("notification_message") if kind == "notification" else None
@@ -791,7 +904,7 @@ class TimerScheduler:
                     display_name = f"{logical_name}: {message}"
                 else:
                     display_name = message
-            await self._dispatch_background_event(
+            response = await self._dispatch_background_event(
                 "timer_notification",
                 {
                     "timer_name": display_name,
@@ -803,45 +916,36 @@ class TimerScheduler:
                     "language": language,
                 },
             )
-            return
+            return _delivery_outcome(response)
 
         if kind == "alarm":
             alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
             synthetic_entity_id = f"agenthub_alarm:{row['id']}"
             briefing = _coerce_bool(payload.get("briefing", False))
-            try:
-                await self._dispatch_background_event(
-                    "alarm_notification",
-                    {
-                        "alarm_name": alarm_name,
-                        "alarm_label": payload.get("alarm_label") or alarm_name,
-                        "briefing": briefing,
-                        "entity_id": synthetic_entity_id,
-                        "media_player": payload.get("media_player"),
-                        "origin_device_id": origin_device_id,
-                        "origin_area": origin_area,
-                        "language": language,
-                        "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
-                        "timezone": payload.get("timezone"),
-                    },
-                )
-            except asyncio.CancelledError:
-                # Cancellation (user cancel, shutdown) must not spawn a new occurrence.
-                raise
-            except Exception:
-                # A failed dispatch must not end a recurring series.
-                await self._schedule_next_recurrence(row, payload)
-                raise
-            await self._schedule_next_recurrence(row, payload)
-            return
+            response = await self._dispatch_background_event(
+                "alarm_notification",
+                {
+                    "alarm_name": alarm_name,
+                    "alarm_label": payload.get("alarm_label") or alarm_name,
+                    "briefing": briefing,
+                    "entity_id": synthetic_entity_id,
+                    "media_player": payload.get("media_player"),
+                    "origin_device_id": origin_device_id,
+                    "origin_area": origin_area,
+                    "language": language,
+                    "scheduled_for_epoch": int(payload.get("scheduled_for_epoch") or row.get("fires_at") or 0),
+                    "timezone": payload.get("timezone"),
+                },
+            )
+            return _delivery_outcome(response)
 
         if kind == "delayed_action":
             target_entity = payload.get("target_entity") or ""
             target_action = payload.get("target_action") or ""
             if not target_entity or "/" not in target_action:
                 logger.error("delayed_action timer %s missing target_entity/target_action", row["id"])
-                return
-            await self._dispatch_background_event(
+                return _OUTCOME_FAILED
+            response = await self._dispatch_background_event(
                 "delayed_action",
                 {
                     "target_entity": target_entity,
@@ -852,14 +956,14 @@ class TimerScheduler:
                     "language": language,
                 },
             )
-            return
+            return _delivery_outcome(response)
 
         if kind == "sleep":
             media_player = payload.get("media_player") or ""
             if not media_player:
                 logger.error("sleep timer %s missing media_player", row["id"])
-                return
-            await self._dispatch_background_event(
+                return _OUTCOME_FAILED
+            response = await self._dispatch_background_event(
                 "sleep_media_stop",
                 {
                     "media_player": media_player,
@@ -869,13 +973,13 @@ class TimerScheduler:
                     "language": language,
                 },
             )
-            return
+            return _delivery_outcome(response)
 
         if kind == "snooze":
             # Legacy rows only: new snoozes are scheduled as plain timers. The
             # snooze delay has already elapsed, so ring now instead of
             # scheduling a second timer of the same length.
-            await self._dispatch_background_event(
+            response = await self._dispatch_background_event(
                 "timer_notification",
                 {
                     "timer_name": logical_name,
@@ -887,9 +991,21 @@ class TimerScheduler:
                     "language": language,
                 },
             )
-            return
+            return _delivery_outcome(response)
 
         logger.warning("Unknown timer kind for %s: %s", row["id"], kind)
+        return _OUTCOME_FAILED
+
+
+def _delivery_outcome(response: Any) -> str:
+    """Map a background-turn result to a delivery outcome; any other error is a terminal ``failed``."""
+    if not isinstance(response, dict):
+        return _OUTCOME_DELIVERED
+    if response.get("delivery") == BACKGROUND_DELIVERY_HA_UNREACHABLE:
+        return _OUTCOME_HA_UNREACHABLE
+    if response.get("error"):
+        return _OUTCOME_FAILED
+    return _OUTCOME_DELIVERED
 
 
 def _load_payload(row: dict) -> dict[str, Any]:

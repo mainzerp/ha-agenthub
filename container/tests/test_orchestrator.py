@@ -39,6 +39,7 @@ from app.agents.mediation import _strip_followup_tag  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.send import _CONTENT_SEPARATOR, SendAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
+    BACKGROUND_DELIVERY_HA_UNREACHABLE,
     AgentCard,
     BackgroundEvent,
     BackgroundTask,
@@ -183,7 +184,26 @@ class TestOrchestratorAgent:
         result = await orch.handle_task(task)
         assert result["routed_to"] == "orchestrator"
         assert result["speech"] == ""
+        assert "delivery" not in result
         mock_background.assert_awaited_once()
+
+    @patch("app.agents.background_actions.handle_background_event", new_callable=AsyncMock)
+    async def test_background_turn_forwards_ha_unreachable_delivery(self, mock_background):
+        mock_background.return_value = {
+            "speech": "",
+            "error": "Home Assistant is unreachable.",
+            "delivery": BACKGROUND_DELIVERY_HA_UNREACHABLE,
+        }
+        orch, *_ = self._make_orchestrator()
+        task = BackgroundTask(
+            context=TaskContext(
+                source="background",
+                background_event=BackgroundEvent(event_type="timer_notification", payload={"timer_name": "Tea"}),
+            ),
+        )
+        result = await orch.handle_task(task)
+        assert result["delivery"] == BACKGROUND_DELIVERY_HA_UNREACHABLE
+        assert result["error"] == "Home Assistant is unreachable."
 
     @patch("app.agents.background_actions.handle_background_event", new_callable=AsyncMock)
     async def test_background_stream_turn_skips_filler_and_returns_terminal_frame(self, mock_background):

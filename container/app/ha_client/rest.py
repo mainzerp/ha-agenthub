@@ -35,6 +35,13 @@ _REQUEST_NEVER_SENT_ERRORS: tuple[type[Exception], ...] = (
     httpx.ConnectTimeout,
     httpx.PoolTimeout,
 )
+
+
+def is_request_never_sent_error(exc: BaseException) -> bool:
+    """True when ``exc`` proves the HA request never left this process (HA unreachable, nothing executed)."""
+    return isinstance(exc, _REQUEST_NEVER_SENT_ERRORS)
+
+
 _direct_ha_write_warning_count = 0
 # WebSocket commands that run services or scripts: only ``call_service``
 # may send them, so the approval backstop always applies.
@@ -257,6 +264,30 @@ class HARestClient:
         except (httpx.HTTPError, ValueError, TypeError):
             logger.warning("HA connection test failed", exc_info=True)
             return False
+
+    async def is_reachable(self) -> bool:
+        """Return False only when a request to HA cannot be sent at all.
+
+        Unreachable means: no HTTP client, or ``GET /api/`` fails before the
+        request left this process (connection refused, DNS failure, connect
+        or pool timeout) while the WebSocket is not connected either. Any
+        HTTP response, whatever its status, and any later error count as
+        reachable.
+        """
+        ws = self._state_observer
+        if ws is not None and ws.is_connected():
+            return True
+        if self._client is None:
+            return False
+        try:
+            await self._client.get("/api/")
+        except asyncio.CancelledError:
+            raise
+        except _REQUEST_NEVER_SENT_ERRORS:
+            return False
+        except httpx.HTTPError:
+            return True
+        return True
 
     async def get_states(self) -> list[dict[str, Any]]:
         """GET /api/states -- returns all entity states."""

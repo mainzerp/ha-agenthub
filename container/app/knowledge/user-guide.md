@@ -241,21 +241,24 @@ The **Send Devices** page at `/dashboard/send-devices` maps notification targets
 
 ![Timers page for managing alarms and wake briefing](screenshots/15_timers.png)
 
-The **Timers** page at `/dashboard/timers` lists the timers and alarms created through the timer agent and refreshes every 5 seconds. Timers and alarms are created by voice or chat, not on this page. You can:
+The **Timers** page at `/dashboard/timers` lists the pending timers and alarms created through the timer agent, plus Home Assistant `input_datetime` helpers as read-only rows, and refreshes every 5 seconds. Timers and alarms are created by voice or chat, not on this page. You can:
 
-- Edit or cancel timers and alarms.
-- Review the **History** section: timers and alarms of the last 30 days that rang, were missed (container was down) or were cancelled. Older entries are removed automatically.
+- Edit or cancel timers and alarms: timers by name and fire time, alarms also by wake briefing and recurrence (once, daily, weekly with interval and weekdays). Paused timers are not listed here; manage them by voice or chat.
+- Review the **History** section: timers and alarms of the last 30 days that rang, were missed (container down, or Home Assistant unreachable for more than 5 minutes) or were cancelled. Older entries are removed automatically.
+
+Times on this page and in missed-timer notices are shown in the Home Assistant time zone, not the container's (UTC). The edit dialog still uses the browser's time zone.
 - Configure the **Wake Briefing** card to compose a spoken morning briefing for internal alarms. The briefing can include weather, news, calendar events, date/time, and selected sensor states.
 
 Wake briefings apply only to AgentHub-managed internal alarms, not to HA native plain timers.
 
 Timer and alarm behavior by voice or chat:
 
-- **Unnamed references.** "Cancel the timer" or "add 5 minutes" acts on the only running timer; with several, the assistant asks which one. Timers set in another room, from chat, or on a named satellite are found when the current room has none. Timer commands never change alarms.
+- **Unnamed references.** A timer set without a name ("a timer for 5 minutes") is labelled by its duration ("5 minutes timer") and can be addressed that way ("the 5-minute timer", "den Fünf-Minuten-Timer"). "Cancel the timer" or "add 5 minutes" acts on the only running timer; with several, the assistant asks which one and lists each with its time left. This applies to cancel, pause, resume, finish and extend. Timers set in another room, from chat, or on a named satellite are found when the current room has none. Timer commands never change alarms.
 - **Pause and resume.** Pausing keeps the remaining time; resuming continues from there. Paused timers stay paused across restarts until resumed or cancelled.
-- **Snooze.** Snoozing rings once after the snooze time (default 5 minutes). It never ends a recurring alarm series.
-- **Alarm dates.** "Wake me tomorrow at 7" or "Monday at 6:30" ring on that day in the Home Assistant timezone, including across daylight-saving changes. A weekly alarm first rings on its next listed weekday.
+- **Snooze.** Snoozing rings once after the snooze time (default 5 minutes). It never ends a recurring alarm series, and snoozing without a name never stops other running timers; snoozing a named timer replaces that timer.
+- **Alarm dates.** "Wake me tomorrow at 7" or "Monday at 6:30" ring on that day in the Home Assistant timezone, including across daylight-saving changes. A weekly alarm, also every other week, first rings on its next listed weekday. A day without a time ("set an alarm for tomorrow") makes the assistant ask for the time. "Cancel my alarm for tomorrow" considers only that day's alarms, and asks when there are several.
 - **After a restart.** Timers and alarms that came due while AgentHub was down do not ring late: they are reported once, together, as missed (within one minute of the due time they still ring). A missed recurring alarm keeps its series. Delayed device actions run if at most 5 minutes late and are otherwise dropped and logged.
+- **Home Assistant unreachable.** A timer or alarm that comes due while Home Assistant cannot be reached (restart, update) is retried every 15 seconds and rings late, up to 5 minutes after its due time. After that it is marked missed and one missed notice is sent once Home Assistant is back. An error answer from Home Assistant or a timeout after the request was sent is not retried, so nothing rings twice.
 - **Language.** Announcements are generated in the configured language; fixed fallback texts are translated through the rewrite agent, with English as the last resort.
 
 **Optional: alarm times kept in Home Assistant.** Timers and alarms set by voice or chat run entirely in the container and need no HA helpers. Only if you keep wake-up times in HA `input_datetime` helpers and want AgentHub to announce them, add the HA label `agenthub_alarm` (setting `alarm_monitor.label`) to those helpers in **Settings > Devices & services > Helpers**; they must also be visible to the timer agent. Helpers without the label (for example automation schedule helpers) never ring. With the default visibility rules nothing else is needed; if you restricted the `timer-agent` visibility rules, keep the `input_datetime` domain (or the helper itself) allowed, and `assist_satellite` for spoken announcements on satellites. If you do not use HA helper alarms, set `alarm_monitor.label` to empty to turn the alarm monitor off.
@@ -488,7 +491,7 @@ response_variable: door_check
 - **Relative requests** -- "a bit brighter", "two degrees warmer", and "turn it up" change the current value instead of guessing an absolute one.
 - **Several devices** -- "turn off all lights in the kitchen" runs one action per matching light (at most 8 per turn; name a room when more lights match). If an agent ever plans more than 8 actions, only the first 8 run and the answer says how many were not executed.
 - **Conditions** -- only lights support "do X if Y". Other agents say they cannot run the action conditionally and ask whether to do it now.
-- **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command.
+- **Unsupported features** -- when Home Assistant reports that a device lacks a capability (tilt, position, volume, dimming, color), the agent says so instead of sending the command. Blinds whose slats only accept a position (no separate open/close for the slats) open and close the slats by setting the slat position to 100 or 0.
 - **Already in that state** -- a plain on/off/open/close request for a single device that is already in that state is answered without a service call; requests with values (brightness, color, position) and group entities always run.
 
 ### Camera on a TV or Screen

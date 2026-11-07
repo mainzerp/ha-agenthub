@@ -1381,6 +1381,17 @@ class OrchestratorAgent(BaseAgent):
 
         if self._is_background_turn(task):
             result = await self._handle_background_turn(task)
+            background_exit: dict[str, Any] = {
+                "_exit_type": "background_turn",
+                "speech": result.get("speech", ""),
+                "routed_to": "orchestrator",
+                "action_executed": result.get("action_executed"),
+                "voice_followup": False,
+                "error": result.get("error"),
+            }
+            if result.get("delivery"):
+                # Delivery outcome for the timer scheduler (an unreachable HA is retried).
+                background_exit["delivery"] = result["delivery"]
             return PipelinePreludeResult(
                 conversation_id=conversation_id,
                 detected_language=context_language,
@@ -1392,14 +1403,7 @@ class OrchestratorAgent(BaseAgent):
                 condensed_task="",
                 confidence=None,
                 used_origin_context=False,
-                early_exit={
-                    "_exit_type": "background_turn",
-                    "speech": result.get("speech", ""),
-                    "routed_to": "orchestrator",
-                    "action_executed": result.get("action_executed"),
-                    "voice_followup": False,
-                    "error": result.get("error"),
-                },
+                early_exit=background_exit,
             )
 
         # DP-4: background turns early-exited above; only IngressTask reaches text reads.

@@ -139,7 +139,7 @@ async def _start_timer(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
-    logical_name = entity_query or _helpers._default_timer_label(seconds)
+    logical_name = _helpers._timer_label(entity_query, seconds)
     timer_id = await scheduler.schedule(
         logical_name=logical_name,
         kind="plain",
@@ -159,24 +159,34 @@ async def _start_timer(
     }
 
 
-def _not_found(entity_query: str) -> dict:
+def _not_found(entity_query: str, set_seconds: int | None = None) -> dict:
     if _helpers._is_unnamed(entity_query, "timer"):
-        speech = "No timer is running."
+        if set_seconds:
+            speech = f"No {_helpers._default_timer_label(set_seconds)} is running."
+        else:
+            speech = "No timer is running."
     else:
         speech = f"No timer named '{entity_query}' is running."
     return {"success": False, "entity_id": None, "new_state": None, "speech": speech}
 
 
 def _ambiguous(rows: list[dict], verb: str) -> dict:
-    names = ", ".join(str(r.get("logical_name") or "timer") for r in rows)
+    # Describe each timer by label and time left: unnamed timers would
+    # otherwise all read "timer" and the user could not pick one.
+    now = int(time.time())
+    descriptions = [_helpers._describe_timer_row(r, now) for r in rows]
     return {
         "success": False,
         "entity_id": None,
         "new_state": None,
-        "speech": f"Multiple timers are running: {names}. Please specify which one to {verb}.",
+        "speech": f"Multiple timers are running: {'; '.join(descriptions)}. Which one should I {verb}?",
         # A clarifying question: the user's answer is re-dispatched.
         "voice_followup": True,
-        "metadata": {"status": "ambiguous", "candidates": [r.get("logical_name") for r in rows]},
+        "metadata": {
+            "status": "ambiguous",
+            "candidates": [_helpers._row_label(r) for r in rows],
+            "candidate_descriptions": descriptions,
+        },
     }
 
 
@@ -198,6 +208,7 @@ async def _find_timer_rows(
     *,
     area_id: str | None,
     states: frozenset[str] | None = None,
+    set_seconds: int | None = None,
 ) -> list[dict]:
     return await _helpers._find_rows(
         scheduler,
@@ -207,6 +218,7 @@ async def _find_timer_rows(
         unnamed_kinds=_helpers.COUNTDOWN_KINDS,
         kind_word="timer",
         states=states,
+        set_seconds=set_seconds,
     )
 
 
@@ -225,12 +237,20 @@ async def _cancel_timer(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
-    rows = await _find_timer_rows(scheduler, entity_query, area_id=area_id, states=frozenset({"pending", "paused"}))
+    set_seconds = _helpers._timer_duration_selector(action.get("parameters"))
+    rows = await _find_timer_rows(
+        scheduler,
+        entity_query,
+        area_id=area_id,
+        states=frozenset({"pending", "paused"}),
+        set_seconds=set_seconds,
+    )
     if not rows:
-        return _not_found(entity_query)
-    # Several rows sharing one name are cancelled together (one logical timer);
-    # different names need a clarification.
-    if len(rows) > 1 and not _helpers._same_name(rows):
+        return _not_found(entity_query, set_seconds)
+    # Several rows sharing one user-given name are cancelled together (one
+    # logical timer). Unnamed timers are separate timers: an unnamed or
+    # duration-only reference that matches several of them asks which one.
+    if len(rows) > 1 and (_helpers._is_unnamed(entity_query, "timer") or not _helpers._same_logical_timer(rows)):
         return _ambiguous(rows, "cancel")
     for row in rows:
         await scheduler.cancel(id_=row["id"])
@@ -239,7 +259,7 @@ async def _cancel_timer(
         "action": action_name,
         "entity_id": None,
         "new_state": "idle",
-        "speech": f"Cancelled {rows[0].get('logical_name') or entity_query}.",
+        "speech": f"Cancelled {_helpers._row_label(rows[0]) or entity_query}.",
     }
 
 
@@ -270,11 +290,22 @@ async def _snooze_timer(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
-    if entity_query:
-        # Only a running countdown of that name is replaced. Alarms (and the
-        # next occurrence of a recurring alarm series) are never touched.
-        await scheduler.cancel(logical_name=entity_query, area=area_id, kinds={"plain", "notification"})
-    logical_name = entity_query or "snoozed timer"
+    unnamed = _helpers._is_unnamed(entity_query, "timer")
+    if not unnamed:
+        # Only a running countdown with this user-given name is replaced.
+        # Unnamed timers (default labels, legacy "timer" rows) are separate
+        # timers and keep running. Alarms (and the next occurrence of a
+        # recurring alarm series) are never touched.
+        same_name = await scheduler.list(
+            logical_name=entity_query,
+            area=area_id,
+            kinds={"plain", "notification"},
+            states={"pending", "paused"},
+        )
+        for row in same_name:
+            if not _helpers._row_is_unnamed(row):
+                await scheduler.cancel(id_=row["id"])
+    logical_name = _helpers.SNOOZE_LABEL if unnamed else entity_query
     # The snooze itself is the countdown: a plain timer that rings once
     # after ``seconds``.
     await scheduler.schedule(
@@ -291,7 +322,7 @@ async def _snooze_timer(
         "action": action_name,
         "entity_id": None,
         "new_state": "active",
-        "speech": f"Snoozed {logical_name} for {human}.",
+        "speech": f"Snoozed {'the timer' if unnamed else logical_name} for {human}.",
     }
 
 
@@ -325,9 +356,10 @@ async def _extend_timer(
             "speech": "Timer scheduler is unavailable.",
         }
 
-    rows = await _find_timer_rows(scheduler, entity_query, area_id=area_id)
+    set_seconds = _helpers._timer_duration_selector(params)
+    rows = await _find_timer_rows(scheduler, entity_query, area_id=area_id, set_seconds=set_seconds)
     if not rows:
-        return _not_found(entity_query)
+        return _not_found(entity_query, set_seconds)
     if len(rows) > 1:
         return _ambiguous(rows, "extend")
     target_row = rows[0]
@@ -356,7 +388,7 @@ async def _extend_timer(
         "action": action_name,
         "entity_id": None,
         "new_state": "active",
-        "speech": f"Extended {logical_name}. New time remaining: {human}.",
+        "speech": f"Extended {_helpers._row_label(target_row)}. New time remaining: {human}.",
     }
 
 
@@ -388,7 +420,7 @@ async def _start_timer_with_notification(
             "new_state": None,
             "speech": "Timer scheduler is unavailable.",
         }
-    logical_name = entity_query or _helpers._default_timer_label(seconds)
+    logical_name = _helpers._timer_label(entity_query, seconds)
     await scheduler.schedule(
         logical_name=logical_name,
         kind="notification",
@@ -639,7 +671,8 @@ async def _pause_or_resume_or_finish(
         states = frozenset({"pending"})
     else:
         states = frozenset({"pending", "paused"})
-    rows = await _find_timer_rows(scheduler, entity_query, area_id=area_id, states=states)
+    set_seconds = _helpers._timer_duration_selector(action.get("parameters"))
+    rows = await _find_timer_rows(scheduler, entity_query, area_id=area_id, states=states, set_seconds=set_seconds)
     if not rows:
         if action_name == "resume_timer":
             speech = (
@@ -648,11 +681,11 @@ async def _pause_or_resume_or_finish(
                 else f"No paused timer named '{entity_query}' was found."
             )
             return {"success": False, "entity_id": None, "new_state": None, "speech": speech}
-        return _not_found(entity_query)
+        return _not_found(entity_query, set_seconds)
     if len(rows) > 1:
         return _ambiguous(rows, verb)
     row = rows[0]
-    name = row.get("logical_name") or entity_query or "timer"
+    name = _helpers._row_label(row) or entity_query or "timer"
 
     if action_name == "finish_timer":
         await scheduler.cancel(id_=row["id"])

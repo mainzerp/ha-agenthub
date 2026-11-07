@@ -25,6 +25,7 @@ from app.agents.tool_calling import (
     call_llm_with_mcp_tools_stream,
 )
 from app.analytics.tracer import _optional_span
+from app.ha_client.home_context import parse_zone
 from app.models.agent import AgentCard, AgentErrorCode, DispatchTask, TaskResult, source_is_stateless_task
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,16 @@ def _memory_text(value: Any) -> str:
     return sanitize_untrusted_text(value, UNTRUSTED_TEXT_MAX_CHARS)
 
 
-def _memory_date_label(epoch: Any) -> str:
-    """Format a memory match's last-activity epoch as a YYYY-MM-DD label."""
+def _memory_date_label(epoch: Any, timezone: str | None = None) -> str:
+    """Format a memory match's last-activity epoch as a YYYY-MM-DD label.
+
+    The date is taken in ``timezone`` (the task's home zone, as stated in the prompt's local
+    time) so it compares correctly with "today"; UTC is the explicit fallback when the zone
+    is empty or invalid.
+    """
+    zone = parse_zone(timezone) or UTC
     try:
-        return datetime.fromtimestamp(int(epoch), tz=UTC).date().isoformat()
+        return datetime.fromtimestamp(int(epoch), tz=zone).date().isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return "unknown date"
 
@@ -136,7 +143,7 @@ class GeneralAgent(BaseAgent):
         # (prefix-cache constraint). Matches are score-annotated suggestions,
         # never verified facts.
         if task.context and task.context.memory_context:
-            system_prompt += self._render_memory_context(task.context.memory_context)
+            system_prompt += self._render_memory_context(task.context.memory_context, task.context.timezone)
         # AI task: the vision pre-step's description of the task's image
         # attachments (untrusted: it describes camera content).
         if task.context and task.context.attachment_description:
@@ -168,8 +175,10 @@ class GeneralAgent(BaseAgent):
         )
         return f"{header}\n{wrap_untrusted_data(text)}"
 
-    def _render_memory_context(self, matches: list[dict]) -> str:
+    def _render_memory_context(self, matches: list[dict], timezone: str | None = None) -> str:
         """Render session-memory matches as a score-annotated prompt block.
+
+        Match dates are labeled in ``timezone`` (the task's home zone), UTC when unknown.
 
         Historical user text is delimiter-wrapped exactly like live user
         input (injection safety); memory enters via the system prompt, never
@@ -183,7 +192,7 @@ class GeneralAgent(BaseAgent):
                 score = float(match.get("similarity") or 0.0)
             except (TypeError, ValueError):
                 score = 0.0
-            date_label = _memory_date_label(match.get("last_turn_at"))
+            date_label = _memory_date_label(match.get("last_turn_at"), timezone)
             for turn in match.get("snippet_turns") or []:
                 if not isinstance(turn, dict):
                     continue

@@ -1264,6 +1264,17 @@ class TestTimerExecutor:
         from unittest.mock import patch as _patch
 
         scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "k1",
+                    "logical_name": "kitchen timer",
+                    "kind": "plain",
+                    "state": "pending",
+                    "payload_json": '{"duration": "00:10:00"}',
+                }
+            ]
+        )
         scheduler.cancel = AsyncMock(return_value=1)
         scheduler.schedule = AsyncMock(return_value="new-id")
         with _patch("app.agents.timer_executor._helpers._get_scheduler", return_value=scheduler):
@@ -1279,8 +1290,8 @@ class TestTimerExecutor:
                 agent_id="timer-agent",
             )
         assert result["success"]
-        scheduler.cancel.assert_awaited_once()
-        assert scheduler.cancel.await_args.kwargs["kinds"] == {"plain", "notification"}
+        assert scheduler.list.await_args.kwargs["kinds"] == {"plain", "notification"}
+        scheduler.cancel.assert_awaited_once_with(id_="k1")
         scheduler.schedule.assert_awaited_once()
         assert scheduler.schedule.await_args.kwargs["kind"] == "plain"
         assert scheduler.schedule.await_args.kwargs["duration_seconds"] == 300

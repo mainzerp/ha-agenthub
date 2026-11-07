@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.agents import background_actions as ba
-from app.models.agent import BackgroundEvent, TaskContext
+from app.ha_client.rest import HARestClient
+from app.models.agent import BACKGROUND_DELIVERY_HA_UNREACHABLE, BackgroundEvent, TaskContext
 
 # ---------------------------------------------------------------------------
 # G20: background_actions handles timer and alarm background events
@@ -343,3 +345,100 @@ class TestBackgroundActionsSafePromptRendering:
         mock_persistent.assert_awaited_once()
         message = mock_persistent.await_args[0][2]
         assert "Pasta {special}" in message
+
+
+# ---------------------------------------------------------------------------
+# Delivery outcome: an unreachable Home Assistant is reported for retry
+# ---------------------------------------------------------------------------
+
+
+def _rest_client(handler) -> HARestClient:
+    client = HARestClient()
+    client._client = httpx.AsyncClient(base_url="http://ha.test", transport=httpx.MockTransport(handler))
+    return client
+
+
+def _refuse(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("Connection refused", request=request)
+
+
+class TestRingDeliveryOutcome:
+    _TIMER_EVENT = BackgroundEvent(event_type="timer_notification", payload={"timer_name": "Tea", "language": "en"})
+
+    async def _deliver(self, ha_client) -> dict:
+        with (
+            patch.object(ba, "_load_notification_profile", new=AsyncMock(return_value={"persistent_enabled": True})),
+            patch.object(ba, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        ):
+            return await ba.handle_background_event(self._TIMER_EVENT, ha_client=ha_client)
+
+    @pytest.mark.asyncio
+    async def test_every_call_refused_reports_ha_unreachable(self):
+        ha_client = AsyncMock()
+        ha_client.call_service.side_effect = httpx.ConnectError("Connection refused")
+        result = await self._deliver(ha_client)
+        assert result["delivery"] == BACKGROUND_DELIVERY_HA_UNREACHABLE
+        ha_client.call_service.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_after_send_is_not_unreachable(self):
+        ha_client = AsyncMock()
+        ha_client.call_service.side_effect = httpx.ReadTimeout("read timed out")
+        result = await self._deliver(ha_client)
+        assert "delivery" not in result
+        assert result == {"speech": ""}
+
+    @pytest.mark.asyncio
+    async def test_unreachable_rest_client_is_detected_before_delivery(self):
+        client = _rest_client(_refuse)
+        try:
+            with patch.object(ba, "dispatch_timer_notification", new=AsyncMock()) as dispatch:
+                result = await ba.handle_background_event(self._TIMER_EVENT, ha_client=client)
+        finally:
+            await client.close()
+        assert result["delivery"] == BACKGROUND_DELIVERY_HA_UNREACHABLE
+        dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delayed_action_is_not_probed(self):
+        ha_client = AsyncMock()
+        ha_client.call_service.side_effect = httpx.ConnectError("Connection refused")
+        event = BackgroundEvent(
+            event_type="delayed_action",
+            payload={"target_entity": "light.bedroom", "target_action": "light/turn_on"},
+        )
+        with patch("app.agents.background_actions.entity_is_visible", new=AsyncMock(return_value=True)):
+            result = await ba.handle_background_event(event, ha_client=ha_client)
+        assert "delivery" not in result
+        assert result["error"]
+
+
+class TestHaRestClientIsReachable:
+    @pytest.mark.asyncio
+    async def test_refused_connection_is_unreachable(self):
+        client = _rest_client(_refuse)
+        try:
+            assert await client.is_reachable() is False
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_any_http_response_is_reachable(self):
+        client = _rest_client(lambda request: httpx.Response(401))
+        try:
+            assert await client.is_reachable() is True
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_missing_http_client_is_unreachable(self):
+        assert await HARestClient().is_reachable() is False
+
+    @pytest.mark.asyncio
+    async def test_connected_websocket_is_reachable(self):
+        client = _rest_client(_refuse)
+        client.set_state_observer(MagicMock(is_connected=MagicMock(return_value=True)))
+        try:
+            assert await client.is_reachable() is True
+        finally:
+            await client.close()

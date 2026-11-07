@@ -28,6 +28,16 @@ def _event(dispatcher: MagicMock, index: int = -1):
     return request.params["task"].context.background_event
 
 
+async def _wait_for_state(timer_id: str, state: str, *, timeout: float = 5.0) -> dict | None:
+    """Poll the row in real time until it reaches ``state`` or ``timeout`` passes; return the last row read."""
+    deadline = time.monotonic() + timeout
+    while True:
+        row = await ScheduledTimersRepository.get(timer_id)
+        if (row and row["state"] == state) or time.monotonic() >= deadline:
+            return row
+        await asyncio.sleep(0.01)
+
+
 async def _insert_row(row_id: str, *, kind: str, fires_at: int, payload: dict, name: str | None = None) -> None:
     await ScheduledTimersRepository.insert(
         id=row_id,
@@ -153,11 +163,7 @@ class TestSnoozeAndPause:
             timer_id = await sched.schedule(
                 logical_name="nap", kind="snooze", duration_seconds=0, payload={"snooze_seconds": 300}
             )
-            for _ in range(50):
-                await asyncio.sleep(0)
-                row = await ScheduledTimersRepository.get(timer_id)
-                if row and row["state"] == "fired":
-                    break
+            await _wait_for_state(timer_id, "fired")
             dispatcher.dispatch.assert_awaited_once()
             assert _event(dispatcher).event_type == "timer_notification"
             assert await ScheduledTimersRepository.list_pending() == []

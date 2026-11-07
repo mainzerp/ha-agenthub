@@ -20,9 +20,12 @@ async def _handle_read_action(
     *,
     area_id: str | None = None,
     timezone: str | None = None,
+    parameters: dict[str, Any] | None = None,
 ) -> dict:
     if action_name == "query_timer":
-        return await _query_timer(entity_query, area_id=area_id)
+        return await _query_timer(
+            entity_query, area_id=area_id, set_seconds=_helpers._timer_duration_selector(parameters)
+        )
     if action_name == "list_timers":
         return await _list_timers(area_id=area_id)
     if action_name == "list_alarms":
@@ -30,7 +33,7 @@ async def _handle_read_action(
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 
-async def _query_timer(entity_query: str, *, area_id: str | None = None) -> dict:
+async def _query_timer(entity_query: str, *, area_id: str | None = None, set_seconds: int | None = None) -> dict:
     scheduler = _helpers._get_scheduler()
     if scheduler is None:
         return {
@@ -48,13 +51,15 @@ async def _query_timer(entity_query: str, *, area_id: str | None = None) -> dict
         unnamed_kinds=_helpers.COUNTDOWN_KINDS,
         kind_word="timer",
         states=_LISTED_STATES,
+        set_seconds=set_seconds,
     )
     if not rows:
-        speech = (
-            "No timer is currently running."
-            if _helpers._is_unnamed(entity_query, "timer")
-            else f"No timer named '{entity_query}' is currently running."
-        )
+        if not _helpers._is_unnamed(entity_query, "timer"):
+            speech = f"No timer named '{entity_query}' is currently running."
+        elif set_seconds:
+            speech = f"No {_helpers._default_timer_label(set_seconds)} is currently running."
+        else:
+            speech = "No timer is currently running."
         return {
             "success": False,
             "entity_id": None,
@@ -77,20 +82,15 @@ _LISTED_STATES = frozenset({"pending", "paused"})
 
 
 def _remaining_seconds(row: dict[str, Any], now: int) -> int:
-    if row.get("state") == "paused":
-        try:
-            payload = json.loads(row.get("payload_json") or "{}")
-            return max(0, int(payload.get("paused_remaining_seconds") or 0))
-        except (TypeError, ValueError):
-            return 0
-    return max(0, int(row["fires_at"]) - now)
+    return _helpers._remaining_seconds(row, now) or 0
 
 
 def _describe_row(row: dict[str, Any], now: int) -> str:
     human = _helpers._format_duration_human(_remaining_seconds(row, now))
+    label = _helpers._row_label(row)
     if row.get("state") == "paused":
-        return f"{row['logical_name']} is paused with {human} remaining"
-    return f"{row['logical_name']} has {human} remaining"
+        return f"{label} is paused with {human} remaining"
+    return f"{label} has {human} remaining"
 
 
 async def _list_scoped(
@@ -135,7 +135,7 @@ async def _list_timers(*, area_id: str | None = None) -> dict:
     for row in rows:
         human = _helpers._format_duration_human(_remaining_seconds(row, now))
         suffix = "paused, " if row.get("state") == "paused" else ""
-        parts.append(f"{row['logical_name']} ({suffix}{human} remaining)")
+        parts.append(f"{_helpers._row_label(row)} ({suffix}{human} remaining)")
     return {
         "success": True,
         "entity_id": "",

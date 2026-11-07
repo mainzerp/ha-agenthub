@@ -74,6 +74,11 @@ class BackgroundEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+# Value of the ``delivery`` key in a background-turn result when a notification could not reach Home Assistant at all
+# (no request left this process). The timer scheduler retries such a ring; without the key the turn was attempted.
+BACKGROUND_DELIVERY_HA_UNREACHABLE = "ha_unreachable"
+
+
 class AgentCard(BaseModel):
     """A2A agent card describing agent capabilities."""
 

@@ -91,7 +91,7 @@ async def test_unnamed_cancel_timer_with_two_running_timers_asks():
     scheduler.cancel.assert_not_awaited()
     assert result.error is None
     assert "pasta" in result.speech and "eggs" in result.speech
-    assert "which one to cancel" in result.speech
+    assert result.speech.endswith("Which one should I cancel?")
     assert result.voice_followup is True
 
 

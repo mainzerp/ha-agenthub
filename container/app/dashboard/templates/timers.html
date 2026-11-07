@@ -346,6 +346,7 @@ function timersPage() {
         timers: [],
         alarms: [],
         history: [],
+        homeTimezone: null,
         historyRetentionDays: 30,
         historyInterval: null,
         loading: true,
@@ -442,6 +443,7 @@ function timersPage() {
             if (data) {
                 this.timers = data.timers || [];
                 this.alarms = data.alarms || [];
+                this.homeTimezone = data.timezone || null;
             }
             this.loading = false;
         },
@@ -462,7 +464,16 @@ function timersPage() {
 
         formatEpoch(epoch) {
             if (typeof epoch !== 'number' || !epoch) return '-';
-            return new Date(epoch * 1000).toLocaleString();
+            var when = new Date(epoch * 1000);
+            // Home Assistant time zone when the server reports it; browser zone only as the fallback.
+            if (this.homeTimezone) {
+                try {
+                    return when.toLocaleString(undefined, { timeZone: this.homeTimezone });
+                } catch (e) {
+                    // Unknown zone name for this browser: fall through to browser-local time.
+                }
+            }
+            return when.toLocaleString();
         },
 
         formatDurationSeconds(seconds) {

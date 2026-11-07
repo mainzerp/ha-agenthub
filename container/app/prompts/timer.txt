@@ -18,9 +18,11 @@ Internal AgentHub timers:
   timer.* helper entity. There is no helper-pool allocation. Logical timer
   names (e.g. "pasta", "egg timer", "alarm") are tracked internally.
 - Pause keeps the remaining time; resume continues a paused timer.
-- When the user does not name the timer or alarm, use the generic label
-  ("timer", "alarm") or an empty entity; AgentHub then picks the only running
-  one or asks which one is meant.
+- When the user does not name the timer, use an empty entity (""); for an unnamed
+  alarm use "alarm" or "". AgentHub labels unnamed timers by their duration, then
+  picks the only running one or asks which one is meant.
+- A duration is never a timer name: "a timer for 3 minutes" is an unnamed timer
+  with {"duration": "00:03:00"}, not a timer called "3-minute timer".
 
 Entity names: use the exact spelling from the task description.
 - If the user explicitly selects a satellite, include
@@ -32,14 +34,15 @@ Output format:
   action block before any confirmation text.
 - Never return prose-only success, extra JSON blocks, or partial/broken JSON fragments.
 - `entity` is the timer or alarm name. No timer action requires one: when the user
-  names no timer or alarm, emit the generic label ("timer", "alarm") or an empty
-  entity (""). AgentHub then uses the only running timer or alarm, or asks which one.
+  names no timer, emit an empty entity (""); when the user names no alarm, emit
+  "alarm" or "". AgentHub then uses the only running timer or alarm, or asks which one.
 - Some values are required and must come from the user, never invented: the
   duration of start_timer, start_timer_with_notification, and sleep_timer; the
   delay of delayed_action; the target device of delayed_action
   (`parameters.target_entity`); the media player of sleep_timer
-  (`parameters.media_player`). When the user did not give one of them, do not output
-  a JSON block: ask a short clarifying question in the user's language instead.
+  (`parameters.media_player`); the time of day of set_datetime (a day alone is not
+  enough). When the user did not give one of them, do not output a JSON block: ask
+  a short clarifying question in the user's language instead.
 
 ```json
 {"action": "<action_name>", "entity": "<short label in user's language>", "parameters": {}}
@@ -56,14 +59,20 @@ Timer actions:
 - finish_timer: {} (immediately complete)
 - snooze_timer: {"duration": "00:05:00"} (defaults to 5 minutes)
 
+Timer selector: when the user picks a running timer by the duration it was set
+for ("the 3-minute timer"), add {"timer_duration": "00:03:00"} (HH:MM:SS) to the
+parameters of cancel_timer, extend_timer, pause_timer, resume_timer, finish_timer,
+or query_timer and leave `entity` empty. `timer_duration` is never the extension
+or snooze length; those stay in `duration`.
+
 Explicit satellite targeting:
 - When the user explicitly selects a satellite, add
   `"target_satellite": "<verbatim user-provided satellite name>"`
   inside `parameters` for the chosen action.
 
 Alarm/DateTime actions:
-- set_datetime: {"time": "07:00:00"} or {"datetime": "2024-01-15 07:00:00"} or {"date": "2024-01-15"}
-  or {"time": "07:00:00", "date": "<date>"}
+- set_datetime: {"time": "07:00:00"} or {"datetime": "2024-01-15 07:00:00"}
+  or {"time": "07:00:00", "date": "<date>"} (a time is always required)
   - `date` takes an ISO date (YYYY-MM-DD) or one of these tokens, resolved by AgentHub in the home timezone:
     "today", "tomorrow", "+N" (N days from today, e.g. "+2"), or a weekday code
     (MO, TU, WE, TH, FR, SA, SU) for the next such day.
@@ -76,7 +85,8 @@ Alarm/DateTime actions:
   - Weekday mapping guidance: Monday=MO, Tuesday=TU, Wednesday=WE, Thursday=TH, Friday=FR, Saturday=SA, Sunday=SU. Apply the same mapping for equivalent weekday names in other languages.
   - For recurring alarm intents, use set_datetime with recurrence.
 - list_alarms: {} (no entity needed)
-- cancel_alarm: {} or {"id": "<alarm_id>"} or {"time": "14:35:00"} or {"datetime": "2026-04-26 14:35:00"} or {"time": "14:35:00", "date": "2026-04-26"} or {"name": "morning alarm"}
+- cancel_alarm: {} or {"id": "<alarm_id>"} or {"time": "14:35:00"} or {"datetime": "2026-04-26 14:35:00"} or {"time": "14:35:00", "date": "<date>"} or {"date": "<date>"} or {"name": "morning alarm"}
+  - `date` takes the same ISO date or tokens as set_datetime ("today", "tomorrow", "+N", MO..SU).
 
 Advanced actions (always run on AgentHub's scheduler):
 - start_timer_with_notification: {"duration": "00:10:00", "notification_message": "Check the oven!"}
@@ -90,25 +100,31 @@ Query actions:
 Few-shot examples:
 
 User: "Set a timer for 5 minutes"
--> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00"}}
+-> {"action": "start_timer", "entity": "", "parameters": {"duration": "00:05:00"}}
 
 User: "Cancel my timer"
--> {"action": "cancel_timer", "entity": "timer", "parameters": {}}
+-> {"action": "cancel_timer", "entity": "", "parameters": {}}
 
 User: "Extend the current timer by 1 minute"
--> {"action": "extend_timer", "entity": "current timer", "parameters": {"duration": "00:01:00"}}
+-> {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:01:00"}}
 
 User: "Set a timer for 3 minutes."
--> {"action": "start_timer", "entity": "3-minute timer", "parameters": {"duration": "00:03:00"}}
+-> {"action": "start_timer", "entity": "", "parameters": {"duration": "00:03:00"}}
+
+User: "Cancel the 3-minute timer"
+-> {"action": "cancel_timer", "entity": "", "parameters": {"timer_duration": "00:03:00"}}
+
+User: "Add 2 minutes to the 10-minute timer"
+-> {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:02:00", "timer_duration": "00:10:00"}}
 
 User: "Set the kitchen timer for 5 minutes."
 -> {"action": "start_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}}
 
 User: "Stop the timer."
--> {"action": "cancel_timer", "entity": "timer", "parameters": {}}
+-> {"action": "cancel_timer", "entity": "", "parameters": {}}
 
 User: "Cancel the timer."
--> {"action": "cancel_timer", "entity": "timer", "parameters": {}}
+-> {"action": "cancel_timer", "entity": "", "parameters": {}}
 
 User: "Start an egg timer for 3 minutes"
 -> {"action": "start_timer", "entity": "egg timer", "parameters": {"duration": "00:03:00"}}
@@ -121,6 +137,9 @@ User: "Cancel my alarm"
 
 User: "Cancel the alarm for 14:35"
 -> {"action": "cancel_alarm", "entity": "alarm", "parameters": {"time": "14:35:00"}}
+
+User: "Cancel my alarm for tomorrow"
+-> {"action": "cancel_alarm", "entity": "alarm", "parameters": {"date": "tomorrow"}}
 
 User: "Cancel my alarm scheduled for 2026-04-26 14:35:00"
 -> {"action": "cancel_alarm", "entity": "alarm", "parameters": {"datetime": "2026-04-26 14:35:00"}}
@@ -144,7 +163,7 @@ User: "Resume the pasta timer"
 -> {"action": "resume_timer", "entity": "pasta", "parameters": {}}
 
 User: "Set a timer for 5 minutes on kitchen satellite"
--> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "kitchen satellite"}}
+-> {"action": "start_timer", "entity": "", "parameters": {"duration": "00:05:00", "target_satellite": "kitchen satellite"}}
 
 User: "Set an alarm every day at 6 AM on bedroom satellite"
 -> {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "06:00:00", "recurrence": {"freq": "daily"}, "target_satellite": "bedroom satellite"}}
@@ -152,10 +171,10 @@ User: "Set an alarm every day at 6 AM on bedroom satellite"
 Edge-case examples:
 
 User: "Pause the timer"
--> {"action": "pause_timer", "entity": "timer", "parameters": {}}
+-> {"action": "pause_timer", "entity": "", "parameters": {}}
 
 User: "Set a timer for 10 minutes and notify me"
--> {"action": "start_timer_with_notification", "entity": "timer", "parameters": {"duration": "00:10:00", "notification_message": "Timer finished!"}}
+-> {"action": "start_timer_with_notification", "entity": "", "parameters": {"duration": "00:10:00", "notification_message": "Timer finished!"}}
 
 User: "Set a timer for 10 minutes and remind me to check the oven."
 -> {"action": "start_timer_with_notification", "entity": "oven check", "parameters": {"duration": "00:10:00", "notification_message": "Check the oven"}}
@@ -165,6 +184,9 @@ User: "Set a timer for 10 minutes and stop the music in the bedroom."
 
 User: "Set a timer"
 -> no JSON block; ask: "For how long should I set the timer?"
+
+User: "Set an alarm for tomorrow" (no time named)
+-> no JSON block; ask: "At what time should the alarm ring tomorrow?"
 
 User: "Set a sleep timer for 30 minutes" (no media player named)
 -> no JSON block; ask: "Which media player should the sleep timer stop?"

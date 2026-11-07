@@ -9,15 +9,16 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from app.agents.base import _load_prompt_path_async, _prompt_path, _render_prompt_template, language_code_to_name
 from app.agents.timer_executor._timers import deferred_action_rejection, deferred_owner_agent
 from app.db.repository import SettingsRepository
 from app.entity.visibility import entity_is_visible
-from app.models.agent import BackgroundEvent, TaskContext
+from app.ha_client.home_context import parse_zone, resolve_home_zone
+from app.ha_client.rest import HARestClient, is_request_never_sent_error
+from app.models.agent import BACKGROUND_DELIVERY_HA_UNREACHABLE, BackgroundEvent, TaskContext
 from app.security.sanitization import wrap_user_input
 from app.security.sensitive_actions import SOURCE_DELAYED_ACTION, SensitiveActionBlocked, sensitive_call_source
 from app.util.ha_template import neutralize_ha_template
@@ -116,6 +117,54 @@ def _error_result(message: str, *, code: str = "internal", recoverable: bool = T
     }
 
 
+class _HADeliveryProbe:
+    """Pass-through HA client that records whether a notification's service calls reached Home Assistant.
+
+    A call that fails before its request left this process (``is_request_never_sent_error``) marks HA as
+    unreachable. Any other outcome, including an HTTP error or a timeout after sending, counts as reached, so
+    a retried ring can never play twice.
+    """
+
+    def __init__(self, ha_client: Any) -> None:
+        self._ha_client = ha_client
+        self.reached = False
+        self.never_sent = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ha_client, name)
+
+    @property
+    def ha_unreachable(self) -> bool:
+        return self.never_sent and not self.reached
+
+    async def call_service(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            result = await self._ha_client.call_service(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if is_request_never_sent_error(exc):
+                self.never_sent = True
+            else:
+                self.reached = True
+            raise
+        self.reached = True
+        return result
+
+
+# Ring notifications (timers, alarms, the missed notice) report an unreachable HA so the scheduler can retry them.
+_RING_EVENT_TYPES = frozenset({"alarm_notification", "timer_notification"})
+
+
+def _ha_unreachable_result(event_type: str) -> dict[str, Any]:
+    logger.warning("Background %s not delivered: Home Assistant is unreachable", event_type)
+    return {
+        "speech": "",
+        "error": "Home Assistant is unreachable.",
+        "delivery": BACKGROUND_DELIVERY_HA_UNREACHABLE,
+    }
+
+
 async def handle_background_event(
     event: BackgroundEvent,
     *,
@@ -124,7 +173,35 @@ async def handle_background_event(
     entity_index: Any = None,
     gateway: Any = None,
 ) -> dict[str, Any]:
-    """Execute a structured background event inside orchestrator ownership."""
+    """Execute a structured background event inside orchestrator ownership.
+
+    A ring notification that cannot reach Home Assistant at all (checked before delivery, and when every
+    service call of the delivery failed before sending) returns ``delivery`` =
+    ``BACKGROUND_DELIVERY_HA_UNREACHABLE``.
+    """
+    if event.event_type not in _RING_EVENT_TYPES or ha_client is None:
+        return await _handle_background_event(
+            event, context=context, ha_client=ha_client, entity_index=entity_index, gateway=gateway
+        )
+    if isinstance(ha_client, HARestClient) and not await ha_client.is_reachable():
+        return _ha_unreachable_result(event.event_type)
+    probe = _HADeliveryProbe(ha_client)
+    result = await _handle_background_event(
+        event, context=context, ha_client=probe, entity_index=entity_index, gateway=gateway
+    )
+    if probe.ha_unreachable:
+        return _ha_unreachable_result(event.event_type)
+    return result
+
+
+async def _handle_background_event(
+    event: BackgroundEvent,
+    *,
+    context: TaskContext | None = None,
+    ha_client: Any,
+    entity_index: Any = None,
+    gateway: Any = None,
+) -> dict[str, Any]:
     payload = dict(event.payload or {})
 
     if event.event_type == "alarm_notification":
@@ -638,30 +715,30 @@ async def dispatch_text_notification(
     await _deliver_text_channels(ha_client, profile, title=title, message=message)
 
 
-def _format_due(epoch: int, timezone: str | None, now_epoch: int) -> str:
-    tz = None
-    if timezone:
-        try:
-            tz = ZoneInfo(str(timezone))
-        except Exception:
-            tz = None
-    due = datetime.fromtimestamp(int(epoch), tz=tz) if tz is not None else datetime.fromtimestamp(int(epoch))
-    now = datetime.fromtimestamp(int(now_epoch), tz=tz) if tz is not None else datetime.fromtimestamp(int(now_epoch))
+def _format_due(epoch: int, zone: tzinfo | None, now_epoch: int) -> str:
+    """Wall-clock due time in ``zone``; ``None`` (zone unknown) uses the container's local zone."""
+    due = datetime.fromtimestamp(int(epoch), tz=zone)
+    now = datetime.fromtimestamp(int(now_epoch), tz=zone)
     return due.strftime("%H:%M") if due.date() == now.date() else due.strftime("%Y-%m-%d %H:%M")
 
 
-def _missed_summary(missed: list[Any], timezone: str | None, now_epoch: int) -> str:
+async def _missed_zone(ha_client: Any, timezone: str | None) -> tzinfo | None:
+    """Zone for the missed summary: the payload zone, else the cached home zone, else ``None``."""
+    return parse_zone(timezone) or await resolve_home_zone(ha_client)
+
+
+def _missed_summary(missed: list[Any], zone: tzinfo | None, now_epoch: int) -> str:
     parts: list[str] = []
     for item in missed:
         if not isinstance(item, dict):
             continue
         kind = "alarm" if item.get("kind") == "alarm" else "timer"
         name = str(item.get("name") or "").strip()
-        due = _format_due(int(item.get("due_epoch") or 0), timezone, now_epoch)
+        due = _format_due(int(item.get("due_epoch") or 0), zone, now_epoch)
         parts.append(f"{kind} '{name}' (due {due})" if name else f"{kind} (due {due})")
     if not parts:
         return ""
-    return "While AgentHub was offline, these were missed: " + "; ".join(parts) + "."
+    return "While AgentHub or Home Assistant was offline, these were missed: " + "; ".join(parts) + "."
 
 
 async def dispatch_missed_notification(
@@ -673,7 +750,8 @@ async def dispatch_missed_notification(
     entity_index: Any = None,
 ) -> None:
     """Report timers/alarms that came due while the container was down, once and together."""
-    text = _missed_summary(missed, timezone, int(time.time()))
+    zone = await _missed_zone(ha_client, timezone)
+    text = _missed_summary(missed, zone, int(time.time()))
     if not text:
         return
     await dispatch_text_notification(
