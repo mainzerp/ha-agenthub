@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 3.17.1
+**Current Version:** 3.17.2
 
 ## Recent Changes
 
-(tracking changes since 3.17.1)
+(tracking changes since 3.17.2)
 
 ## Version History
+
+### 3.17.2 (PATCH) -- timers survive HA outages, distinct unnamed timers, home time zone, slat position on blinds
+
+(commits 5d3b35d, a8883cf, 727a34d)
+
+- Fix (timer): a timer or alarm that comes due while Home Assistant is unreachable (restart, update) no longer disappears. It stays pending, retries every 15 s and rings up to 5 minutes late; afterwards it is marked missed and one missed notice is sent once Home Assistant is back. Before, the failed ring was marked fired and the alarm was lost silently. An HTTP error or a timeout after the request was sent is not retried, so nothing rings twice. A recurring alarm schedules its next occurrence exactly once. Each ring now first checks that Home Assistant answers (`GET /api/`). The missed notice reads "While AgentHub or Home Assistant was offline, these were missed: ...". Audit FIX-22.
+- Fix (timer): unnamed timers are stored with a duration label ("5 minutes timer") instead of "timer", so several unnamed timers no longer collide: cancel, pause, resume, finish and extend ask which one is meant and list the time left, and snooze no longer cancels other running timers. Duration references ("the 5-minute timer", "Fünf-Minuten-Timer") and the new `timer_duration` selector find the timer. Cancelling an alarm accepts relative and date-only selectors ("cancel my alarm for tomorrow" only considers that day), an alarm with a day but no time asks for the time instead of ringing at midnight, and every-other-week alarms first ring on the nearest listed weekday. Timer prompt updated. Audit FIX-11 (PKG-10).
+- Fix (timer): missed-timer notices, the Timers page (scheduled time and history) and memory date labels use the Home Assistant time zone instead of the container's UTC. `GET /api/admin/timers` returns a `timezone` field. Audit FIX-12 (PKG-11).
+- Fix (agents): blinds whose slats only accept a position (SET_TILT_POSITION without OPEN_TILT/CLOSE_TILT, for example free@home, `supported_features` 143) open and close the slats with tilt position 100 / 0 instead of answering "does not support tilting" (live trace 7be721310bb1456c).
+- Tests: scheduler tests poll with real time instead of event-loop yields (a recurring-alarm test failed once on a slow CI runner).
+- Docs: timers in the user guide and troubleshooting, the timer endpoints in the API reference (response shapes, PATCH and DELETE contracts), the slat-position fallback in user guide and architecture.
+- Upgrade: no migration. Timers already stored as "timer" are treated as unnamed and labelled by their duration.
+- Verification: container suite 5623 passed on the merged tree; drift checks of user guide, troubleshooting, API reference and architecture against the code (no contradictions); full gate `scripts/ci.py` on the release commit. Not verified: a real Home Assistant outage and the new timer phrasings by voice. Known gaps: paused timers are not listed on the Timers page, extending a paused timer fails, the edit dialog uses the browser's time zone.
 
 ### 3.17.1 (PATCH) -- own entity names include integration names
 
