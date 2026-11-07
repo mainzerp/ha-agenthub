@@ -41,28 +41,31 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
-- Own entity names under HA 2026.11 naming · priority: P1 · area: entity-resolution
-  Outcome: an entity with an own name (registry `name`, else the
-  integration's `original_name`, as HA's `entity_name()`) is matched, listed
-  and spoken by it when HA's `friendly_name` is exactly "device name + own
-  name" (HA 2026.11); main entities, frozen and customize names keep HA's
-  name; a collision guard keeps
-  HA's names when own names would clash in a domain; changed names delete the
-  entity's cache rows (`entity_name_changed`). Audit plan DEV-19, stage 1
-  (Decisions 2026-11-06 N1, 2026-11-07).
-  Status: v3.17.0 live; live check 2026-11-07 found 15 entities renamed but
-  13 free@home entities (name only in `original_name`, e.g.
-  `light.wohnzimmer`) still device-prefixed. Fix in the working tree on
-  `main`: `parse_entity_registry_rows` (`ha_client/websocket.py`) falls back
-  to `original_name`; not committed. Passed: ruff, container suite 5516
-  passed / 0 failed, naming code run on live HA registry data (read-only):
-  28 of 28 device-prefixed controllable entities get their own name. Not run:
-  match preview on the local instance (its Docker network cannot reach HA).
-  Needs user verification: after deploy, Entity Index match preview for
-  "Wohnzimmer" (domain light) shows `light.wohnzimmer` named "Wohnzimmer" with
-  HA's "Dimmer (Unterverteilung Gäste) (ABB700C7FF30) Wohnzimmer" underneath;
-  same for `cover.kuppel_bad` and the two Wohnzimmer radiators; a voice
-  "Wohnzimmer aus" answers without a device prefix.
+- Timer and alarm reliability package · priority: P1 · area: timer
+  Outcome: a timer or alarm due while HA is unreachable is retried every 15 s
+  and rings up to 5 min late, else is marked missed with one notice once HA is
+  back (audit FIX-22); unnamed timers are labelled by duration, never collide
+  on cancel/snooze, and ambiguous references ask; "Fünf-Minuten-Timer",
+  date-only and relative alarm cancel, time question for date-only alarms,
+  every-other-week first ring fixed (FIX-11, PKG-10); missed notices, Timers
+  page and memory labels use the HA time zone (FIX-12, PKG-11); flaky
+  scheduler tests wait on real time.
+  Review target: commit a8883cf, released as v3.17.2. Passed: ruff, full container suite 5623 passed / 0 failed, drift
+  checks of user-guide, troubleshooting, api-reference and architecture
+  (no contradictions; gaps filled). Not run: real HA outage, voice turns.
+  Needs user verification after deploy: "Timer 5 Minuten" twice, then "Timer
+  abbrechen" asks which one; "Wecker für morgen" asks for the time; Timers page
+  shows home time. Follow-ups: paused timers missing on the Timers page,
+  extend on a paused timer fails, edit dialog uses browser time.
+
+- Blind slats open/close on position-only covers · priority: P2 · area: agents
+  Outcome: `open_cover_tilt` / `close_cover_tilt` on a cover without
+  OPEN_TILT/CLOSE_TILT but with SET_TILT_POSITION (free@home blinds,
+  supported_features 143) run as `set_cover_tilt_position` 100 / 0 instead of
+  "does not support tilting". Found in live trace 7be721310bb1456c.
+  Review target: commit 5d3b35d, released as v3.17.2. Passed: 4 new executor tests, full suite. Needs user verification after
+  deploy: "Lamellen von Jalousie Mitte schließen" moves the slats.
+
 - Own reasoning settings for mediation and merge · priority: P1 · area: llm
   Outcome: `mediation.reasoning_effort` (mediation, localization) and
   `mediation.merge_reasoning_effort` (multi-agent merge), seeded empty =
@@ -764,6 +767,15 @@ Live pipeline in board format — headings are columns, cards are
   Shipped in v2.5.1 (https://github.com/mainzerp/ha-agenthub/releases/tag/v2.5.1). Phase 3 (docs drift) done. Left as is by decision: MCP add-server returns 201 on failed connect.
 
 ## Done
+
+- Own entity names under HA 2026.11 naming · priority: P1 · area: entity-resolution
+  Outcome: an entity with an own name (registry `name`, else the integration's `original_name`, as HA's
+  `entity_name()`) is matched, listed and spoken by it when HA's `friendly_name` is exactly "device name + own
+  name"; a collision guard keeps HA's names when own names would clash in a domain; changed names delete the
+  entity's cache rows (`entity_name_changed`). Audit plan DEV-19, stage 1 (Decisions 2026-11-06 N1, 2026-11-07).
+  Shipped in v3.17.0 and v3.17.1 (e649469). Live match preview: 28 of 28 formerly device-prefixed entities
+  resolve by their own name.
+  Verified by user on the live instance (2026-11-07): names and voice replies without device prefix.
 
 - Timers: history of finished timers in the dashboard · priority: P2 · area: timer
   Outcome: `/dashboard/timers` has a History section listing timers and alarms that rang, were missed or were
