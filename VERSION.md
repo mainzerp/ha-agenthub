@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 3.17.0
+**Current Version:** 3.17.1
 
 ## Recent Changes
 
-(tracking changes since 3.17.0)
+(tracking changes since 3.17.1)
 
 ## Version History
+
+### 3.17.1 (PATCH) -- own entity names include integration names
+
+(commit e649469)
+
+- Fix (entity): an entity's own name is now what Home Assistant's `entity_name()` returns: the user-set registry `name`, else the integration's `original_name`. 3.17.0 used only the user-set name, so entities named by their integration (free@home: `light.wohnzimmer` "Wohnzimmer", `cover.kuppel_bad`, the Wohnzimmer radiators, the actor switches) kept the device-prefixed `friendly_name`, and HA's entity settings offered no way to fix it because they already showed the own name. The exact "<device name> <own name>" check and the per-domain collision guard are unchanged; integration names shared by several entities of a domain (for example "Konnektivität" on every Alexa) keep HA's full name. On the live data, 28 of 28 device-prefixed controllable entities get their own name. The container log line reads `... own entity names from HA registry`.
+- Upgrade: no migration. The first entity sync renames the affected entities and deletes their cache rows with reason `entity_name_changed`.
+- Verification: container suite 5516 passed; the naming code run on the live Home Assistant registry (read-only); Entity Index match preview on a local instance against the same Home Assistant with `agent_id` light-agent, cover-agent and climate-agent: 15 of 15 queries resolve to the expected entity by its own name (`exact_friendly_name`, one match). Full gate `scripts/ci.py` on the release commit.
 
 ### 3.17.0 (MINOR) -- own entity names under HA 2026.11 naming, separate mediation and merge reasoning, docs aligned with the code
 
