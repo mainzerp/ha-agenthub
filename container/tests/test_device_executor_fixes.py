@@ -589,6 +589,45 @@ class TestSpeechAndFeatures:
         assert ha.calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("action_name", "tilt"), [("close_cover_tilt", 0), ("open_cover_tilt", 100)])
+    async def test_tilt_open_close_falls_back_to_tilt_position(self, action_name, tilt):
+        """free@home blinds report SET_TILT_POSITION (128) without OPEN_TILT/CLOSE_TILT (sf=143)."""
+        ha = _FakeHA("cover.jalousie_mitte", "closed", {"supported_features": 143}, post_state="closed")
+        result = await execute_cover_action(
+            {"action": action_name, "entity": "Jalousie mitte"},
+            ha,
+            MagicMock(),
+            _matcher("cover.jalousie_mitte", "Jalousie mitte"),
+        )
+        assert "does not support" not in result["speech"]
+        assert ha.calls[0][:2] == ("cover", "set_cover_tilt_position")
+        assert ha.calls[0][3] == {"tilt_position": tilt}
+
+    @pytest.mark.asyncio
+    async def test_tilt_close_uses_native_service_when_supported(self):
+        ha = _FakeHA("cover.office", "open", {"supported_features": 255}, post_state="open")
+        await execute_cover_action(
+            {"action": "close_cover_tilt", "entity": "office blind"},
+            ha,
+            MagicMock(),
+            _matcher("cover.office", "Office Blind"),
+        )
+        assert ha.calls[0][:2] == ("cover", "close_cover_tilt")
+
+    @pytest.mark.asyncio
+    async def test_tilt_close_without_any_tilt_support_is_honest(self):
+        ha = _FakeHA("cover.kuppel_bad", "closed", {"supported_features": 15})
+        result = await execute_cover_action(
+            {"action": "close_cover_tilt", "entity": "Kuppel Bad"},
+            ha,
+            MagicMock(),
+            _matcher("cover.kuppel_bad", "Kuppel Bad"),
+        )
+        assert result["success"] is False
+        assert "does not support tilting" in result["speech"]
+        assert ha.calls == []
+
+    @pytest.mark.asyncio
     async def test_cover_without_position_support_is_honest(self):
         ha = _FakeHA("cover.gate", "closed", {"supported_features": 3})
         result = await execute_cover_action(

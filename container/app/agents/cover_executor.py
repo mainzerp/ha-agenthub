@@ -70,6 +70,13 @@ _REQUIRED_FEATURES: dict[str, tuple[int, str]] = {
     "set_cover_tilt_position": (128, "setting a tilt position"),
 }
 
+# Tilt position used when a cover lacks OPEN_TILT/CLOSE_TILT but supports
+# SET_TILT_POSITION.
+_TILT_POSITION_FALLBACK: dict[str, int] = {
+    "open_cover_tilt": 100,
+    "close_cover_tilt": 0,
+}
+
 # Service-data keys each cover service accepts; other services take none.
 _SERVICE_DATA_KEYS: dict[str, frozenset[str]] = {
     "set_cover_position": frozenset({"position"}),
@@ -220,6 +227,19 @@ async def execute_cover_action(
         }
     allowed_keys = _SERVICE_DATA_KEYS.get(action_name, frozenset())
     service_data = {k: v for k, v in raw_data.items() if k in allowed_keys}
+
+    # Covers whose slats only take a position (SET_TILT_POSITION without
+    # OPEN_TILT/CLOSE_TILT, e.g. free@home blinds) open or close the slats via
+    # tilt position 100 / 0, as HA's own cover card does.
+    tilt_fallback = _TILT_POSITION_FALLBACK.get(action_name)
+    if (
+        tilt_fallback is not None
+        and lacks_feature(state_resp, _REQUIRED_FEATURES[action_name][0])
+        and not lacks_feature(state_resp, _REQUIRED_FEATURES["set_cover_tilt_position"][0])
+    ):
+        action_name = "set_cover_tilt_position"
+        service = "set_cover_tilt_position"
+        service_data = {"tilt_position": tilt_fallback}
 
     # Honest "not supported" answer when HA reports a feature mask without
     # the capability this action needs (e.g. tilt on a plain roller shutter).
