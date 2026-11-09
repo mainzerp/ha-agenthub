@@ -8,7 +8,7 @@ uvicorn[standard]==0.54.0
 litellm>=1.105.1,<2.0.0
 
 # Embeddings (local)
-sentence-transformers==6.1.0
+sentence-transformers==6.2.0
 
 # Vector database (sqlite-vec loadable extension; used by EntityIndex embedding signal)
 sqlite-vec==0.1.9
@@ -49,7 +49,7 @@ aiosqlite==0.22.1
 # Security
 cryptography==50.0.2
 bcrypt==5.0.0
-python-multipart==0.0.32
+python-multipart==0.0.33
 itsdangerous==2.2.0
 
 # Language detection
@@ -58,7 +58,7 @@ langdetect==1.0.9
 # Explicit minimum pins for vulnerable transitive dependencies
 Pillow>=13.0.0
 # certifi (GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320 fixed in 2026.10.19)
-certifi>=2026.10.19
+certifi>=2026.10.23
 python-dotenv>=1.2.4
 # torch runtime dependency (PYSEC-2026-3447 fixed in 83.0.0, GHSA-xmj3-9gf7-h52w in 84.1.0)
 setuptools>=84.2.1
