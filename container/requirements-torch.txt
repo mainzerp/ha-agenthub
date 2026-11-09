@@ -3,4 +3,4 @@
 # requirements.lock; the lock is resolved against it (constraint) so torch's
 # CPU runtime dependencies are pinned and hashed there. Bump torch here, then
 # run: python scripts/ci.py --update-lock
-torch==2.14.1
+torch==2.15.0
