@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 3.17.2
+**Current Version:** 3.18.0
 
 ## Recent Changes
 
-(tracking changes since 3.17.2)
+(tracking changes since 3.18.0)
 
 ## Version History
+
+### 3.18.0 (MINOR) -- strip a spoken wake word from voice input
+
+(commits 9d0f218, 866422e, 9f6faca, 08beea0, f42422f)
+
+- Feat (conversation): new setting `voice.wake_words` (comma- or newline-separated phrases, empty by default = off; Settings page, category Voice). Voice setups that pass the whole utterance including the wake word to speech-to-text, so short commands are not clipped, sent "Alexa, schalte Küche ein" unchanged into cache, classification and agents: exact cache keys differed from the wake-word-free form and the wake word could be read as a device name (Alexa/Echo media players). The HA conversation routes (REST, SSE, WebSocket) now remove one configured wake phrase from the start of the text before anything else sees it: case-insensitive, whole words only ("Alexander" does not match "alexa"), tolerant of STT punctuation ("Hey, Jarvis!" matches "hey jarvis"), longest phrase wins, and the original text is kept when nothing would remain. The trace root span records `wake_word_stripped`. Dashboard chat, AI tasks and background turns are not touched. The settings API rejects values over 500 characters. Applies without a restart (settings cache, up to 60 s).
+- Deps: torch 2.15.0, uv 0.13.7, python-multipart, sentence-transformers and certifi updates, CodeQL action group update.
+- Upgrade: migration 56 seeds `voice.wake_words` empty; nothing changes until it is set. Do not list a wake word that is also the name of one of your devices ("Alexa lauter" would become "lauter").
+- Verification: 39 new unit and route tests; full gate `scripts/ci.py` on the release tree (Ruff, self-docs and card sync, lock check, container suite 5667 passed with coverage 86.93%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test, trivy). The first docker build failed on a transient package download and passed on re-run. Not verified: a real spoken command with the wake word on a live instance.
 
 ### 3.17.2 (PATCH) -- timers survive HA outages, distinct unnamed timers, home time zone, slat position on blinds
 
