@@ -15,6 +15,7 @@ from app.defaults import (
     VOICE_AUDIO_RETENTION_DESCRIPTION,
     VOICE_DEFAULTS,
     VOICE_KEEP_AUDIO_DESCRIPTION,
+    VOICE_WAKE_WORDS_DESCRIPTION,
 )
 
 
@@ -487,6 +488,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "int",
             "voice",
             VOICE_AUDIO_RETENTION_DESCRIPTION,
+        ),
+        (
+            "voice.wake_words",
+            str(VOICE_DEFAULTS["voice.wake_words"]),
+            "string",
+            "voice",
+            VOICE_WAKE_WORDS_DESCRIPTION,
         ),
         # Personality settings
         ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),

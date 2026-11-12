@@ -41,6 +41,20 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Strip leading wake word from voice transcripts · priority: P2 · area: conversation
+  Outcome: setups that pass the whole utterance including the wake word to STT
+  ("Alexa, schalte Küche ein") reach cache, classification and agents without
+  it. Setting `voice.wake_words` (comma-separated, empty = off; Settings page,
+  category Voice; migration 56), stripped in `_build_a2a_request`
+  (`api/routes/conversation.py`) via `strip_leading_wake_word`
+  (`security/user_input.py`): leading phrase only, word-boundary safe,
+  punctuation-tolerant, longest match, original kept if nothing remains.
+  Trace root carries `wake_word_stripped`. Passed: ruff, targeted tests (267),
+  full container suite once (only failure fixed and re-run targeted).
+  Needs the user's check: set the own wake word on the local or live
+  instance, speak a command with it; the trace shows `wake_word_stripped` and
+  the stripped text, the action runs on the right entity.
+
 - Timer and alarm reliability package · priority: P1 · area: timer
   Outcome: a timer or alarm due while HA is unreachable is retried every 15 s
   and rings up to 5 min late, else is marked missed with one notice once HA is

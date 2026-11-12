@@ -4,6 +4,19 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-12 — Wake word stripped at the conversation boundary
+
+- **A leading wake word is removed from HA conversation text before the
+  IngressTask is built, driven by the `voice.wake_words` setting (empty by
+  default).** Rationale: the owner's voice setup passes the full utterance
+  including the wake word to STT so short commands are not clipped; left in,
+  it splits exact cache keys and can be read as an entity target (Alexa/Echo
+  media players). Stripping once at the boundary keeps cache, classifier,
+  stored turns and agents consistent; a configured list instead of hardcoded
+  words keeps Directive 11 intact and lets households with a device named
+  like the wake word leave it off. Dashboard chat, AI tasks and background
+  turns are untouched because they never carry a wake word.
+
 ## 2026-11-07 — Own names include integration names
 
 - **An entity's own name is what HA's `entity_name()` returns: the

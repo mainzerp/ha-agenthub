@@ -516,7 +516,16 @@ class TestVoiceAdminApi:
         bad = await client.put("/api/admin/settings", json={"items": {"voice.speaker_id.wait_ms": "5000"}})
         assert bad.status_code == 400
         grouped = (await client.get("/api/admin/settings")).json()["settings"]
-        assert len(grouped["voice"]) == 10
+        assert len(grouped["voice"]) == 11
+        assert "voice.wake_words" in {row["key"] for row in grouped["voice"]}
+
+    async def test_settings_api_validates_wake_words_length(self, admin_client):
+        client, _ = admin_client
+        ok = await client.put("/api/admin/settings", json={"items": {"voice.wake_words": "alexa, hey jarvis"}})
+        assert ok.status_code == 200
+        assert await SettingsRepository.get_value("voice.wake_words") == "alexa, hey jarvis"
+        too_long = await client.put("/api/admin/settings", json={"items": {"voice.wake_words": "a" * 501}})
+        assert too_long.status_code == 400
 
     async def test_num_threads_write_schedules_background_reload(self, admin_client):
         client, service = admin_client

@@ -280,6 +280,44 @@ class TestConversationEndpoints:
         finally:
             conv_routes._dispatcher = old_dispatcher
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("alexa, hey jarvis", "schalte Kueche ein"),
+            ("", "Alexa, schalte Kueche ein"),
+        ],
+    )
+    @pytest.mark.parametrize("endpoint", ["/api/conversation", "/api/conversation/stream"])
+    async def test_conversation_strips_configured_wake_word(
+        self, authed_client: httpx.AsyncClient, endpoint, configured, expected
+    ):
+        from app.api.routes import conversation as conv_routes
+        from app.db.repository import SettingsRepository
+
+        await SettingsRepository.set("voice.wake_words", configured, value_type="string", category="voice")
+
+        old_dispatcher = conv_routes._dispatcher
+        captured: list = []
+
+        async def _stream(req):
+            captured.append(req)
+            yield {"token": "ok", "conversation_id": "conv-wake", "done": True}
+
+        async def _dispatch(req):
+            captured.append(req)
+            return {"speech": "ok", "conversation_id": "conv-wake"}
+
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.dispatch = _dispatch
+        mock_dispatcher.dispatch_stream = _stream
+        conv_routes._dispatcher = mock_dispatcher
+        try:
+            resp = await authed_client.post(endpoint, json={"text": "Alexa, schalte Kueche ein"})
+            assert resp.status_code == 200
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+        assert captured[0].params["task"].description == expected
+
     def test_conversation_websocket_request_building_sanitizes_and_flags_injection(self):
         from app.api.routes.conversation import _build_a2a_request
         from app.models.conversation import ConversationRequest

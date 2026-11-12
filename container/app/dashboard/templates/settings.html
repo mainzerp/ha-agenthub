@@ -504,6 +504,22 @@
                     <button class="btn btn-primary btn-sm" @click="saveSection('memory')">Save Memory</button>
                 </div>
             </section>
+
+            <!-- Section 9: Voice -->
+            <section data-category="voice" x-show="activeCategory === 'voice'" x-cloak>
+                <h3 class="section-title">Voice</h3>
+                <p class="text-muted mb-md text-80">Speaker identification is configured on the Voice Profiles page. Wake words apply to utterances arriving from Home Assistant.</p>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Wake Words</label>
+                        <input type="text" class="form-input" x-model="s['voice.wake_words']" maxlength="500" placeholder="alexa, hey jarvis, ok nabu">
+                        <p class="text-muted text-80">Comma-separated wake phrases removed from the start of a spoken request (for example when the wake word is passed to speech-to-text so short commands are not clipped). Case-insensitive, one phrase at most per request. Leave empty to keep the text unchanged.</p>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveVoice()">Save Voice</button>
+                </div>
+            </section>
         </div>
     </div>
 </div>
@@ -565,6 +581,7 @@ function settingsPage() {
             { key: 'home_context', label: 'Home Context', count: 0 },
             { key: 'orchestrator', label: 'Orchestrator', count: 0 },
             { key: 'memory', label: 'Memory', count: 0 },
+            { key: 'voice', label: 'Voice', count: 0 },
         ],
 
         init() {
@@ -1119,6 +1136,24 @@ function settingsPage() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({items: payload}),
                 });
+                this.showMessage('Settings saved.', 'success');
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                this.showMessage(e.detail || 'Network error.', 'error');
+            }
+        },
+
+        async saveVoice() {
+            // Only the wake-word text: the speaker-id settings share the
+            // `voice.` prefix but are managed on the Voice Profiles page.
+            var payload = { 'voice.wake_words': (this.s['voice.wake_words'] || '').trim() };
+            try {
+                await window.dashboardApi.request('/api/admin/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({items: payload}),
+                });
+                this.s['voice.wake_words'] = payload['voice.wake_words'];
                 this.showMessage('Settings saved.', 'success');
             } catch (e) {
                 if (e.code === 'auth_expired') return;

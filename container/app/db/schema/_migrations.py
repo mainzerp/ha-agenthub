@@ -34,6 +34,7 @@ from app.defaults import (
     VOICE_AUDIO_RETENTION_DESCRIPTION,
     VOICE_DEFAULTS,
     VOICE_KEEP_AUDIO_DESCRIPTION,
+    VOICE_WAKE_WORDS_DESCRIPTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -1206,6 +1207,23 @@ async def _migrate_to_55(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (55)")
 
 
+async def _migrate_to_56(db: aiosqlite.Connection) -> None:
+    # Migration 56: ``voice.wake_words`` setting (comma-separated wake phrases
+    # stripped from the start of Home Assistant utterances, empty = off).
+    # Idempotent: INSERT OR IGNORE keeps an admin-edited value.
+    await db.execute(
+        "INSERT OR IGNORE INTO settings (key, value, value_type, category, description) VALUES (?, ?, ?, ?, ?)",
+        (
+            "voice.wake_words",
+            str(VOICE_DEFAULTS["voice.wake_words"]),
+            "string",
+            "voice",
+            VOICE_WAKE_WORDS_DESCRIPTION,
+        ),
+    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (56)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1264,6 +1282,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (53, _migrate_to_53),
     (54, _migrate_to_54),
     (55, _migrate_to_55),
+    (56, _migrate_to_56),
 ]
 
 

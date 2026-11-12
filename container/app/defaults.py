@@ -51,7 +51,17 @@ VOICE_DEFAULTS: dict[str, object] = {
     "voice.speaker_id.num_threads": 2,
     "voice.speaker_id.keep_audio": False,
     "voice.speaker_id.audio_retention_days": 30,
+    # Comma-separated wake phrases stripped from the start of a Home Assistant
+    # utterance ("" = feature off).
+    "voice.wake_words": "",
 }
+
+# Maximum stored length of ``voice.wake_words`` (enforced by the settings API).
+VOICE_WAKE_WORDS_MAX_CHARS = 500
+VOICE_WAKE_WORDS_DESCRIPTION = (
+    "Comma-separated wake phrases stripped from the start of Home Assistant utterances "
+    "(for example 'alexa, hey jarvis'); empty = off"
+)
 
 # Inclusive (min, max) bounds enforced by the settings API for numeric voice settings.
 VOICE_SETTING_RANGES: dict[str, tuple[float, float]] = {

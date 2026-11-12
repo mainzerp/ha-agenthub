@@ -8,7 +8,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -17,12 +17,12 @@ from fastapi.responses import StreamingResponse
 
 from app.a2a._request import build_send_request, build_stream_request
 from app.a2a.protocol import JsonRpcRequest
-from app.analytics.tracer import SpanCollector, SpanSource
+from app.analytics.tracer import SpanCollector, SpanSource, record_request_attribute
 from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_headers, rate_limit_conversation
 from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
-from app.security.user_input import prepare_user_text
+from app.security.user_input import load_wake_words, prepare_user_text, strip_leading_wake_word
 
 logger = logging.getLogger(__name__)
 
@@ -228,12 +228,17 @@ def _build_a2a_request(
     request: Request | None = None,
     *,
     conversation_resumable: bool = True,
+    wake_words: Sequence[str] = (),
 ) -> tuple[JsonRpcRequest, IngressTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + IngressTask.
 
     ``conversation_resumable=False`` marks a client that cannot send the
     next turn on the same conversation id (approval questions are then not
     asked; sensitive actions are refused).
+
+    ``wake_words`` (the loaded ``voice.wake_words`` list, empty = off) are
+    stripped from the start of the prepared text so cache keys,
+    classification and stored turns never see the spoken wake word.
     """
     # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
     # SpanCollector that the TracingMiddleware derived from the route
@@ -242,6 +247,12 @@ def _build_a2a_request(
     # context does not silently masquerade as an HA voice call.
     source = getattr(span_collector, "source", "api") if span_collector else "api"
     prepared_text = prepare_user_text(conv_request.text)
+    description = prepared_text.text
+    if wake_words:
+        description, stripped_wake_word = strip_leading_wake_word(description, wake_words)
+        if stripped_wake_word is not None:
+            logger.debug("Stripped leading wake word %r from the utterance", stripped_wake_word)
+            record_request_attribute(span_collector, "wake_word_stripped", stripped_wake_word)
     context = TaskContext(
         device_id=conv_request.device_id,
         area_id=conv_request.area_id,
@@ -254,7 +265,7 @@ def _build_a2a_request(
         injection_detected=prepared_text.injection_detected,
     )
     task = IngressTask(
-        description=prepared_text.text,
+        description=description,
         conversation_id=conv_request.conversation_id,
         context=context,
     )
@@ -288,7 +299,9 @@ async def conversation_rest(
     # route path, no post-hoc assignment needed.
     span_collector = getattr(request.state, "span_collector", None)
 
-    a2a_request, _task = _build_a2a_request(conv_request, "message/send", span_collector, request)
+    a2a_request, _task = _build_a2a_request(
+        conv_request, "message/send", span_collector, request, wake_words=await load_wake_words()
+    )
     if _dispatcher is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     try:
@@ -327,7 +340,9 @@ async def conversation_sse(
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path.
     span_collector = getattr(request.state, "span_collector", None)
-    a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector, request)
+    a2a_request, _task = _build_a2a_request(
+        conv_request, "message/stream", span_collector, request, wake_words=await load_wake_words()
+    )
 
     # M-2: reject at request level; an HTTPException raised inside the
     # generator would be undeliverable once StreamingResponse has started.
@@ -495,7 +510,9 @@ async def _serve_ws_conversation(websocket: WebSocket) -> None:
         state["span_collector"] = span_collector
         state["root_span_id"] = root_span_id
 
-        a2a_request, _task = _build_a2a_request(conv_request, "message/stream", span_collector)
+        a2a_request, _task = _build_a2a_request(
+            conv_request, "message/stream", span_collector, wake_words=await load_wake_words()
+        )
 
         t0 = time.perf_counter()
         start_time = datetime.now(UTC).isoformat()

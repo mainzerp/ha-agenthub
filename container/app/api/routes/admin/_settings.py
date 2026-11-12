@@ -18,6 +18,7 @@ from app.defaults import (
     MEDIATION_REASONING_EFFORT_KEY,
     REASONING_EFFORT_VALUES,
     VOICE_SETTING_RANGES,
+    VOICE_WAKE_WORDS_MAX_CHARS,
 )
 
 from ._shared import _bool_from_setting
@@ -134,6 +135,12 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid value for '{key}': expected one of {', '.join(v or '(empty)' for v in allowed)}",
+        )
+
+    if key == "voice.wake_words" and len(value) > VOICE_WAKE_WORDS_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid value for '{key}': at most {VOICE_WAKE_WORDS_MAX_CHARS} characters",
         )
 
     bounds = VOICE_SETTING_RANGES.get(key)

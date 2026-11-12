@@ -213,9 +213,9 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
 
     real_build = conv_routes._build_a2a_request
 
-    def _capture_build(conv_request, method, span_collector=None):
+    def _capture_build(conv_request, method, span_collector=None, **kwargs):
         built_collectors.append(span_collector)
-        return real_build(conv_request, method, span_collector)
+        return real_build(conv_request, method, span_collector, **kwargs)
 
     # Patch flush to record what was flushed without writing to DB.
     from app.analytics import tracer as tracer_mod
