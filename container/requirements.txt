@@ -13,7 +13,7 @@ sentence-transformers==6.2.0
 # Vector database (sqlite-vec loadable extension; used by EntityIndex embedding signal)
 sqlite-vec==0.1.9
 
-# Speaker identification (CAM++ speaker embeddings for voice turns; numpy
+# Speaker identification (ERes2Net speaker embeddings for voice turns; numpy
 # comes in via sentence-transformers)
 sherpa-onnx==1.13.8
 
@@ -62,3 +62,5 @@ certifi>=2026.10.23
 python-dotenv>=1.2.4
 # torch runtime dependency (PYSEC-2026-3447 fixed in 83.0.0, GHSA-xmj3-9gf7-h52w in 84.1.0)
 setuptools>=84.2.1
+# beautifulsoup4 (via wikipedia) dependency (CVE-2026-126190 fixed in 4.0.0)
+soupsieve>=4.0.0
