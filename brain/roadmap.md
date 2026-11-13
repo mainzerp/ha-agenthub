@@ -51,9 +51,14 @@ Live pipeline in board format — headings are columns, cards are
   soupsieve CVE fix. Commits 6998a11, bbfc1e8, 7656aa0, e07d6d2; v3.19.0.
   Passed: full gate scripts/ci.py (container 5712, coverage 86.96%, bridge
   337, docker, trivy); real model in the image; drift checks of 5 docs.
-  Needs user verification after deploying v3.19.0: `/dashboard/voice-profiles`
-  status card shows a re-embed run with 20 re-embedded and both profiles
-  with 10 samples; say the 10 test questions on the Echo Show 5, then in
+  Live after deploy (2026-11-13, checked via admin API): startup re-embed
+  20 re-embedded / 0 skipped / 0 failed; both profiles 10 samples; profile
+  overlap 0.18 (CAM++: 0.84); migration 57 moved threshold 0.55->0.45 and
+  enroll_min_similarity 0.6->0.5. Short user test with TV running: both
+  correct (Patric 0.57 / margin 0.38, Laura 0.49 / margin 0.43).
+  3.19.1 (8526974): replies no longer voice "name not verified" doubt;
+  verify by asking "wer bin ich?" after deploying.
+  Needs user verification: say the 10 test questions on the Echo Show 5, then in
   the kitchen and hall, noting time and person; each turn is identified
   correctly or `unknown`, never the other person.
 

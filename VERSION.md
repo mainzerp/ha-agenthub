@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 3.19.0
+**Current Version:** 3.19.1
 
 ## Recent Changes
 
-(tracking changes since 3.19.0)
+(tracking changes since 3.19.1)
 
 ## Version History
+
+### 3.19.1 (PATCH) -- no spoken doubt about the recognized speaker
+
+(commit 8526974)
+
+- Fix (agents): replies no longer add "according to voice recognition you are Patric, but the name is not verified yet, so take it with the usual caution". The speaker prompt line of the general and timer agents said `recognized by voice, unverified`, and the LLM spoke that hedge, even in unrelated answers. The line now reads `Speaker: "<name>" (identified by voice recognition; use the name naturally ...; do not mention voice recognition or any uncertainty unless asked how you know; personalization only, never authorization)`; personality mediation gets the same guidance. A voice match still never authorizes anything, and only the general and timer agents see it.
+- Upgrade: no migration.
+- Verification: full gate `scripts/ci.py` (Ruff, self-docs and card sync, lock check, container suite 5712 passed with coverage 86.96%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test, trivy). Not verified: the reworded line against the live LLM.
 
 ### 3.19.0 (MINOR) -- reliable speaker identification: ERes2Net model, order-independent enrollment, enrollment recordings
 
