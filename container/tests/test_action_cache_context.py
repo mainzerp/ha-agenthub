@@ -133,20 +133,6 @@ class TestContextDependentTurnsNotStored:
         cm.store_routing_async.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_speaker_identified_turn_is_not_stored(self):
-        co, cm = _cache_orchestrator()
-        task = IngressTask(
-            description="turn off the kitchen light",
-            context=TaskContext(speaker=SpeakerContext(status="identified", profile_id=1, name="Anna", score=0.9)),
-        )
-
-        result = await _store(co, task, speech="Done, Anna.", original_response_text="Done, Anna.")
-
-        assert result == (False, False)
-        cm.store_action_async.assert_not_called()
-        cm.store_routing_async.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_unrelated_last_entity_still_stores(self):
         co, cm = _cache_orchestrator()
         task = IngressTask(
@@ -267,6 +253,80 @@ class TestReferentProvenance:
         assert await _store(co, named, action_executed=_keller_off()) == (True, False)
         # No name evidence at all: conservative, nothing stored.
         assert await _store(co, unnamed, action_executed=_keller_off()) == (False, False)
+
+
+def _speaker() -> SpeakerContext:
+    return SpeakerContext(status="identified", profile_id=1, name="Anna", score=0.9)
+
+
+class TestSpeakerTurns:
+    """A voice-identified speaker does not make a turn context-dependent."""
+
+    @pytest.mark.asyncio
+    async def test_speaker_turn_naming_entity_stores_action_row(self):
+        # Live 2026-11-13: "Keller einschalten" by an identified speaker stored nothing.
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER)
+        task = IngressTask(description="Keller ausschalten", context=TaskContext(speaker=_speaker()))
+
+        result = await _store(
+            co,
+            task,
+            speech="Der Keller ist aus, Anna.",
+            original_response_text="Der Keller ist aus.",
+            action_executed=_keller_off(),
+        )
+
+        assert result == (True, False)
+        entry: ActionCacheEntry = cm.store_action_async.await_args.args[0]
+        # Replay speech is the unmediated agent speech, never the speaker's name.
+        assert entry.response_text == "Der Keller ist aus."
+        assert "Anna" not in entry.original_response_text
+
+    @pytest.mark.asyncio
+    async def test_speaker_turn_not_naming_entity_stores_routing_only(self):
+        # "my light" may have been resolved through the speaker's memory.
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER)
+        task = IngressTask(description="mein Licht aus", context=TaskContext(speaker=_speaker()))
+
+        result = await _store(co, task, action_executed=_keller_off())
+
+        assert result == (False, True)
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_speaker_followup_answer_is_still_not_stored(self):
+        co, cm = _cache_orchestrator()
+        co._entity_index = _index_with(_KELLER)
+        task = IngressTask(
+            description="Keller ausschalten",
+            context=TaskContext(speaker=_speaker(), is_followup=True, pending_question="Which light?"),
+        )
+
+        result = await _store(co, task, action_executed=_keller_off())
+
+        assert result == (False, False)
+        cm.store_action_async.assert_not_called()
+        cm.store_routing_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_speaker_context_agent_stores_routing_only(self):
+        registry = MagicMock()
+        registry.receives_speaker_context = AsyncMock(return_value=True)
+        cm = MagicMock()
+        cm.store_routing_async = AsyncMock()
+        cm.store_action_async = AsyncMock()
+        co = CacheOrchestrator(
+            cache_manager=cm, entity_index=_index_with(_KELLER), ha_client=None, agent_registry=registry
+        )
+        task = IngressTask(description="Keller ausschalten", context=TaskContext(speaker=_speaker()))
+
+        result = await _store(co, task, target_agent="general-agent", action_executed=_keller_off())
+
+        assert result == (False, True)
+        cm.store_action_async.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

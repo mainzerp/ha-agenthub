@@ -113,6 +113,11 @@ async def record_cache_lookup_skipped(span_collector, reason: str) -> None:
         cache_span["metadata"]["cache_tier"] = 0
 
 
+def _has_speaker(context: Any) -> bool:
+    """True when the turn carries a voice-identified speaker (``TaskContext.speaker``)."""
+    return context is not None and getattr(context, "speaker", None) is not None
+
+
 def _str_attr(obj: Any, name: str) -> str:
     """``obj.name`` when it is a non-empty string, else ``""``."""
     value = getattr(obj, name, None) if obj is not None else None
@@ -533,6 +538,9 @@ class CacheOrchestrator:
         name and is never replayed. Agents that receive the requester /
         speaker prompt line (``_receives_speaker_context``, registry lookup)
         never write an action row; their routing row (no speech) is kept.
+        A turn with a voice-identified speaker writes an action row only when
+        ``user_text`` names every executed entity (``_text_names_entities``),
+        else only the routing row.
 
         Background turns (``source="background"``, e.g. wake briefings) never
         store a cache row: their synthetic prompts are not user phrasings.
@@ -642,6 +650,13 @@ class CacheOrchestrator:
             action_cacheable = bool(entity_id and action_name) and not await self._receives_speaker_context(
                 target_agent
             )
+            # Voice-identified speaker: personal memory may have picked the
+            # entity ("my light"), so the row is keyed by text alone only when
+            # that text names every executed entity itself.
+            if action_cacheable and _has_speaker(task_context):
+                action_cacheable = await self._text_names_entities(
+                    user_text, list(dict.fromkeys([entity_id, *entity_ids]))
+                )
             bound_area_id: str | None = None
             if action_cacheable:
                 action_cacheable, bound_area_id = await self._origin_area_binding(
@@ -781,21 +796,22 @@ class CacheOrchestrator:
         """True when the turn's outcome depended on conversation context.
 
         Signals: the turn answered a pending clarifying question
-        (``is_followup`` / ``pending_question``), a speaker was recognized by
-        voice (the agent saw the speaker's name, so its reply may be
-        personalised and must never be replayed to another speaker), or an
+        (``is_followup`` / ``pending_question``), or an
         executed entity was resolved FROM conversation context: it is one of
         the anaphora hints offered via ``last_entities`` and ``user_text``
         (the cache key) does not name it (see ``_names_referent``). A recent
         referent the user named explicitly ("Keller ausschalten" after
         "Keller einschalten") is selected by the wording alone and is stored.
+
+        A voice-identified speaker is not a signal here: replay speech is the
+        unmediated agent speech, agents that see the speaker's name write no
+        action row, and the entity-naming rule for speaker turns lives in
+        ``store_after_dispatch``.
         """
         context = getattr(task, "context", None) if task is not None else None
         if context is None:
             return False
         if getattr(context, "is_followup", False) or getattr(context, "pending_question", None):
-            return True
-        if getattr(context, "speaker", None) is not None:
             return True
         hints = {}
         for le in getattr(context, "last_entities", None) or []:
@@ -816,6 +832,16 @@ class CacheOrchestrator:
             if hint is not None and not await self._names_referent(user_text, entity_id, hint):
                 return True
         return False
+
+    async def _text_names_entities(self, user_text: str, entity_ids: list[str]) -> bool:
+        """True when ``user_text`` names every entity in ``entity_ids`` (see ``_names_referent``)."""
+        ids = [eid for eid in entity_ids if eid]
+        if not ids:
+            return False
+        for entity_id in ids:
+            if not await self._names_referent(user_text, entity_id, None):
+                return False
+        return True
 
     async def _names_referent(self, user_text: str, entity_id: str, hint) -> bool:
         """True when ``user_text`` names the referent ``entity_id`` itself.

@@ -4,6 +4,22 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-13 — cache: an identified voice speaker no longer blocks caching
+
+- **A turn with a voice-identified speaker is not context-dependent.** It
+  stores the routing row always and the action row only when the turn text
+  names every executed entity (`_text_names_entities`, same naming rule as
+  for anaphora referents). Supersedes the blanket "speaker turns skip the
+  action and routing cache" of `bdb0032`. Rationale: live 2026-11-13, "Küche
+  einschalten" and "Ambiente Wohnen einschalten" by identified speakers
+  stored nothing, so with speaker ID on the voice cache stopped filling. The
+  name risk is already covered: action rows store only unmediated agent
+  speech, and agents with `_receives_speaker_context` write no action row.
+  The naming rule remains because the speaker's memory can pick the entity
+  for "my light". Rejected: dropping the gate with no naming rule (HA-user
+  turns have none, but voice identity is unverified and shared devices are
+  common).
+
 ## 2026-11-13 — voice: enrollment never rejects for another speaker; record enrollment audio
 
 - **An armed enrollment or an admin assignment accepts a sample that sounds

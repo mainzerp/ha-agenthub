@@ -572,9 +572,6 @@ class TestMediationSpeakerLine:
         assert service.search.await_args.args[1] == "ha-anna"
         assert service.index_turn.await_args.kwargs["user_id"] == "ha-anna"
         assert mock_repo.insert.call_args.kwargs["user_id"] is None
-        # A personalized speaker turn is never written to the action or routing cache.
-        orch._cache_manager.store_response.assert_not_called()
-        orch._cache_manager.store_routing.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

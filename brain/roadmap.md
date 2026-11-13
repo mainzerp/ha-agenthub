@@ -41,6 +41,21 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Cache voice turns with an identified speaker · priority: P1 · area: cache
+  Outcome: identified-speaker turns write cache rows again (routing always,
+  action row when the text names the entity). Trigger: live traces
+  3c10ed6f3d514bb0 and 5c46b07225834b16 stored nothing (`cache_stored_*`
+  false). Change in `agents/cache_orchestrator.py` (`_has_speaker`,
+  `_text_names_entities`); docs architecture.md, troubleshooting.md.
+  Passed: `TestSpeakerTurns` in `tests/test_action_cache_context.py` (3 of
+  4 fail on the old code), related voice suites, full container suite
+  (5715 passed; a first run hung once in `test_voice_recordings.py`, which
+  passes alone and on rerun), ruff.
+  Not committed or deployed yet. Needs user verification after deploy: say
+  "Küche einschalten" twice as an enrolled speaker; the first trace's
+  `return` span shows `cache_stored_action: true`, the second is an
+  action-cache hit. "Mein Licht aus" must show only `cache_stored_routing`.
+
 - Voice 3.19.0: ERes2Net speaker model, order-independent enrollment, enrollment recordings · priority: P1 · area: voice
   Outcome: the two enrolled speakers are told apart. Trigger: live analysis
   2026-11-13 (Patric identified as Laura; enrollment order effect). CAM++
