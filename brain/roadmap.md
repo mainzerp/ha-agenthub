@@ -39,34 +39,23 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
-- Voice: order-independent enrollment, enrollment audio, model benchmark · priority: P1 · area: voice
-  Trigger: live analysis 2026-11-13 after a fresh re-enrollment (10 samples
-  each). Laura enrolled first; 7 of Patric's 18 attempts were rejected as
-  "other speaker" (Laura score 0.69-0.89), so his profile kept atypical
-  samples: his own test turns scored 0.49/0.50 against it and one was
-  identified as Laura (0.73). Same-speaker CAM++ cosine on the Echo Show 5
-  ranged 0.21-0.87, cross-speaker 0.52-0.66.
-  Done locally (uncommitted): armed enrollment and assignment accept
-  other-speaker/near-tie samples with a `closer_to_other` warning; committed
-  samples are recorded as `enrolled` voice turns with `keep_audio`; sample
-  list shows profile overlap. Passed: ruff; voice tests 388 passed; full
-  container suite 5690 passed, 4 skipped. Offline benchmark harness with 11
-  sherpa-onnx models ready (session scratchpad), smoke run only.
-  Commit 6998a11 on branch `fix/voice-enrollment-order` (not pushed);
-  test image `ghcr.io/mainzerp/ha-agenthub:test-voice-enroll` pushed
-  (sha256:50eeac8a...), smoke import OK.
-  Deployed; re-enrolled (Patric then Laura, Echo Show 5): CAM++ profile
-  overlap 0.84. Benchmark on 33 `enrolled` recordings + 4 labeled turns:
-  production CAM++ en-voxceleb pair EER 0.42 (worst of 11); ERes2Net
-  en-voxceleb, TitaNet large, CAM++ zh_en advanced, ERes2NetV2 EER 0.000.
-  ERes2Net: overlap 0.19, test Patric 0.61-0.81 vs Laura 0.01-0.14, Laura
-  0.55 vs 0.20, 13 ms per audio second.
-  Next: user picks the model; switch model (image + defaults), re-embed
-  profiles from `enrolled` recordings, verify on other satellites.
-  Verify: deploy test image, both re-enroll 10 sentences on the Echo Show 5,
-  enrollment turns appear with audio on `/dashboard/voice-profiles`.
-
 ## Testing
+
+- Voice 3.19.0: ERes2Net speaker model, order-independent enrollment, enrollment recordings · priority: P1 · area: voice
+  Outcome: the two enrolled speakers are told apart. Trigger: live analysis
+  2026-11-13 (Patric identified as Laura; enrollment order effect). CAM++
+  was the worst of 11 benchmarked models (pair EER 0.42); ERes2Net 0.000.
+  Armed enrollment/assignment warn (`closer_to_other`) instead of rejecting;
+  enrollment samples recorded as `enrolled` turns; re-embed at startup and
+  `POST /api/admin/voice/reembed`; migration 57 sets 0.45/0.15/0.50;
+  soupsieve CVE fix. Commits 6998a11, bbfc1e8, 7656aa0, e07d6d2; v3.19.0.
+  Passed: full gate scripts/ci.py (container 5712, coverage 86.96%, bridge
+  337, docker, trivy); real model in the image; drift checks of 5 docs.
+  Needs user verification after deploying v3.19.0: `/dashboard/voice-profiles`
+  status card shows a re-embed run with 20 re-embedded and both profiles
+  with 10 samples; say the 10 test questions on the Echo Show 5, then in
+  the kitchen and hall, noting time and person; each turn is identified
+  correctly or `unknown`, never the other person.
 
 - Strip leading wake word from voice transcripts · priority: P2 · area: conversation
   Outcome: setups that pass the whole utterance including the wake word to STT

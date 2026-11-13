@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 3.18.0
+**Current Version:** 3.19.0
 
 ## Recent Changes
 
-(tracking changes since 3.18.0)
+(tracking changes since 3.19.0)
 
 ## Version History
+
+### 3.19.0 (MINOR) -- reliable speaker identification: ERes2Net model, order-independent enrollment, enrollment recordings
+
+(commits 6998a11, bbfc1e8, 7656aa0, e07d6d2)
+
+- Feat (voice): the speaker-embedding model is now ERes2Net en-voxceleb (`3dspeaker_speech_eres2net_sv_en_voxceleb_16k`, 192-dim) instead of CAM++ en-voxceleb. In an offline benchmark of 11 sherpa-onnx speaker models on 33 recorded enrollment clips of two household members (German, Echo Show 5) plus 4 labeled turns, CAM++ was the worst (pair EER 0.42: same speaker 0.64, different speakers 0.51 median cosine); ERes2Net separated both speakers without errors (same 0.67, different 0.13) at about 13 ms compute per audio second. The live symptom: one person's normal speech was identified as the other.
+- Feat (voice): with `voice.speaker_id.keep_audio`, every committed enrollment sample is recorded as a voice turn with status `enrolled`, linked to its sample, playable and filterable (**Enrollment samples**) on the Voice Profiles page. Rejected, aborted and unconfirmed enrollment turns record nothing.
+- Feat (voice): profiles survive a speaker-model change. Recordings linked to a sample (enrollment recordings and assigned turns) are re-embedded with the current model once at startup (speaker identification enabled, engine ready) and via **Re-embed recordings** / `POST /api/admin/voice/reembed` (`{reembedded, skipped, failed}`; 409 `reembed_running`, 503 `engine_unavailable`); `GET /api/admin/voice/status` reports `reembed`. Samples whose link was cleared (deleted on purpose) are not re-created.
+- Fix (voice): enrollment no longer depends on who enrolls first. An armed enrollment or an admin assignment stores a sample that sounds like another profile with a `closer_to_other` warning (result fields `warning`, `warning_name`, `warning_score`; banner count) instead of rejecting it as `rejected_other_speaker`, which is removed. Before, the second person's typical samples were dropped and their profile kept only atypical ones. `rejected_too_short`, `rejected_inconsistent` and the session outlier review are unchanged. The sample list reports `overlap` (centroid cosine to each other profile) and flags samples whose closest other profile scores at least as high as their own fit.
+- Fix (deps): `soupsieve>=4.0.0` (beautifulsoup4 via wikipedia; CVE-2026-126190), lock resolves 4.1.
+- Docs: drift checks of API reference, configuration, user guide, troubleshooting and architecture (voice sections) against the code; findings verified and fixed.
+- Upgrade: migration 57 sets `voice.speaker_id.threshold` 0.45, `margin` 0.15 and `enroll_min_similarity` 0.5 for every stored row, customized values included (values tuned for CAM++ do not carry over). Samples of the old model are ignored; profiles enrolled with recording on are rebuilt automatically at startup, all others show "not enrolled" and must be reset and enrolled again.
+- Verification: full gate `scripts/ci.py` on the merged tree (Ruff, self-docs and card sync, lock check, container suite 5712 passed with coverage 86.96%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test, trivy); real ERes2Net model embedded real recordings inside the image; test image with the enrollment fix deployed live and used for a fresh enrollment (recordings stored, warnings shown). Not verified: the ERes2Net build on the live instance, identification on satellites other than the Echo Show 5, and the startup re-embed against live data.
 
 ### 3.18.0 (MINOR) -- strip a spoken wake word from voice input
 
