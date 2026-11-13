@@ -543,11 +543,13 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    failure).
    While an enrollment is armed, the speech embedding passes a sample
    guard (`check_enrollment_sample` in `app/voice/profiles.py`) before it
-   may be stored: with existing samples it is rejected when its own
-   score does not lead the closest other profile by at least
-   `margin * 0.5` -- including another profile scoring higher
-   (`rejected_other_speaker`); a profile's first sample is rejected when
-   it would be identified as another profile. Once the profile has at
+   may be stored. The enrollment declares the speaker, so a sample whose
+   own score does not lead the closest other profile by at least
+   `margin * 0.5` -- including another profile scoring higher -- or a
+   first sample that would be identified as another profile is stored
+   with the warning `closer_to_other` (`warning_name`, `warning_score`
+   on the result; `warnings`, `last_warning` on the armed enrollment),
+   never rejected for it. Once the profile has at
    least two accepted samples of the current model (from the third
    sample on), a sample whose score against the centroid of all accepted
    samples is below `enroll_min_similarity` is rejected
@@ -589,7 +591,14 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    file or row behind. Only turns confirmed by `end` stay: `abort`, a
    disconnect, an idle timeout or a protocol error after the analysis
    call `SpeakerIdService.discard_recording`, which waits for the store
-   task and deletes the row and the file.
+   task and deletes the row and the file. A committed enrollment sample
+   is recorded the same way, but only at `commit_enrollment`: with
+   `keep_audio` the VAD-trimmed PCM travels in `PendingEnrollment` from
+   the analysis to the commit, and the background task writes a row with
+   status `enrolled` whose `assigned_*` columns link the new sample (in
+   the same INSERT only while that sample still exists, since the
+   session outlier review may delete it first). Rejected and unconfirmed
+   enrollment turns never reach the commit and record nothing.
 4. The conversation turn for the same `conversation_id` (the bridge sends
    the same chat-session id) starts a speaker lookup in the orchestrator
    prelude (`PendingSpeakerLookup`), concurrently with memory search and
@@ -744,7 +753,8 @@ Rules:
   The conversation side of such a turn gets only a fixed reply (step 5).
   A rejected sample is logged at INFO with the guard's scores (`own`,
   `best_other`, `lead`, speech seconds, `threshold`, `margin`,
-  `min_similarity`).
+  `min_similarity`); an accepted sample with a warning logs the warning
+  with `own`, `best_other` and speech seconds.
 - The voice path never waits for a model load: while the engine is not
   `ready`, turns report `unavailable` and a background warm-up starts.
 - `/ws/voice` writes no connection-level trace. Audio is stored only for
@@ -757,7 +767,8 @@ Rules:
 - Assigning a recorded turn (`POST /api/admin/voice/turns/{id}/assign`)
   bypasses the enrollment state entirely: it runs
   `check_enrollment_sample` against the target profile, refuses a
-  rejection unless `force`, stores the stored embedding (re-embedded from
+  rejection (`rejected_inconsistent`) unless `force`, reports a
+  `closer_to_other` warning without refusing, stores the stored embedding (re-embedded from
   the WAV when it was computed by another model) via `add_sample`,
   links the turn (`assigned_profile_id`, `assigned_sample_id`) and
   invalidates the centroid cache. Deleting that sample, resetting the

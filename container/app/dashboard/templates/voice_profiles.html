@@ -32,6 +32,9 @@
                     <template x-if="status.enrollment.rejected">
                         <span class="tabular-nums" x-text="'&middot; ' + status.enrollment.rejected + ' rejected'"></span>
                     </template>
+                    <template x-if="status.enrollment.warnings">
+                        <span class="tabular-nums" x-text="'&middot; ' + status.enrollment.warnings + ' with warning'"></span>
+                    </template>
                 </span>
                 <template x-if="status.enrollment.replaced">
                     <span class="text-sm" x-text="replacedLabel(status.enrollment)"></span>
@@ -39,6 +42,9 @@
                 <span class="text-sm">Only this person speaks to a satellite now: say varied sentences with at least <span x-text="s['voice.speaker_id.min_enroll_duration_s'] || 1.5"></span> seconds of speech each. Voice commands are not carried out until the enrollment ends.</span>
                 <template x-if="status.enrollment.last_rejection">
                     <span class="text-sm text-danger" x-text="'Last sample rejected: ' + reasonLabel(status.enrollment.last_rejection.reason)"></span>
+                </template>
+                <template x-if="status.enrollment.last_warning">
+                    <span class="text-sm text-amber" x-text="'Last warning: ' + warningLabel(status.enrollment.last_warning.warning, status.enrollment.last_warning.name, status.enrollment.last_warning.score) + '. The sample was stored; check that the right person spoke and delete wrong samples under Samples.'"></span>
                 </template>
                 <span x-show="status.vad_state === 'failed'" class="text-sm text-danger">Silence trimming is unavailable: samples are stored untrimmed and flagged pre-VAD. Re-enroll once voice activity detection is ready.</span>
                 <span x-show="status.vad_state === 'pending'" class="text-sm">Silence trimming is loading; turns before it is ready are not stored.</span>
@@ -135,7 +141,7 @@
                         <input id="voice-keep-audio" type="checkbox" x-model="s['voice.speaker_id.keep_audio']">
                         <span class="toggle-slider"></span>
                     </label>
-                    <p class="form-hint">Keep the speech of identified and unknown turns so they can be assigned to a profile below. Off by default.</p>
+                    <p class="form-hint">Keep the speech of identified and unknown turns so they can be assigned to a profile below, and of every stored enrollment sample. Off by default.</p>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="voice-retention-days">Recording retention (days, 1-365)</label>
@@ -228,7 +234,8 @@
                                 </template>
                                 <template x-if="samplesOpen(p) && samplesFor(p).items.length > 0">
                                     <div>
-                                        <p class="text-muted text-xs mt-0 mb-sm">Own fit: similarity to the profile's other samples. Closest other: best score against another profile. Delete samples whose own fit is low or whose closest other profile scores higher. Samples marked pre-VAD were recorded before silence trimming; reset and re-enroll the profile.</p>
+                                        <p class="text-muted text-xs mt-0 mb-sm">Own fit: similarity to the profile's other samples. Closest other: best score against another profile. Delete samples whose own fit is low or whose closest other profile scores at least as high (marked red). Samples marked pre-VAD were recorded before silence trimming; reset and re-enroll the profile.</p>
+                                        <p x-show="samplesFor(p).overlap && samplesFor(p).overlap.length" class="text-xs mt-0 mb-sm" :class="overlapHigh(samplesFor(p).overlap) ? 'text-amber' : 'text-muted'" :title="'Similarity between the profile centroids. A value near the identification threshold means the two profiles are easily confused: delete wrong samples or re-enroll.'" x-text="'Profile overlap: ' + overlapLabel(samplesFor(p).overlap)"></p>
                                         <table class="data-table voice-samples-table">
                                             <thead>
                                                 <tr>
@@ -298,6 +305,7 @@
                             <td>
                                 <span class="badge" :class="resultBadge(r.status)" x-text="r.status || '-'"></span>
                                 <span x-show="r.reason" class="voice-result-reason text-xs text-muted" x-text="reasonLabel(r.reason)"></span>
+                                <span x-show="r.warning" class="voice-result-reason text-xs text-amber" x-text="warningLabel(r.warning, r.warning_name, r.warning_score)"></span>
                             </td>
                             <td class="fw-600" x-text="r.name || '-'"></td>
                             <td class="text-xs text-muted" x-text="nearestCandidate(r)"></td>
@@ -329,11 +337,12 @@
                     <option value="unassigned">Unassigned</option>
                     <option value="unknown">Unknown only</option>
                     <option value="no_profiles">Recorded without profiles</option>
+                    <option value="enrolled">Enrollment samples</option>
                 </select>
                 <button class="btn btn-sm btn-danger" @click="deleteAllTurns()" :disabled="!status.recorded_turns">Delete all recordings</button>
             </div>
         </div>
-        <p class="text-muted text-sm mb-md">Listen to past voice turns and assign the right ones to a profile as enrollment samples, without a live enrollment. The enrollment guard still checks each assignment; you can override it. Audio is biometric data: it stays in the container and is deleted after <span x-text="status.audio_retention_days || s['voice.speaker_id.audio_retention_days'] || 30"></span> days.</p>
+        <p class="text-muted text-sm mb-md">Listen to past voice turns and assign the right ones to a profile as enrollment samples, without a live enrollment. The enrollment guard still checks each assignment; you can override it. Stored enrollment samples are recorded too (status enrolled) so you can listen to them. Audio is biometric data: it stays in the container and is deleted after <span x-text="status.audio_retention_days || s['voice.speaker_id.audio_retention_days'] || 30"></span> days.</p>
         <div x-show="statusLoaded && !status.keep_audio" class="alert alert-info mb-md">
             Recording is off: no new turns are recorded. Turn on "Record voice turns" in the settings above to collect them.
         </div>
@@ -370,7 +379,7 @@
                             </td>
                             <td>
                                 <template x-if="t.assigned">
-                                    <span class="badge badge-blue" x-text="'Assigned to ' + (t.assigned_name || 'profile')"></span>
+                                    <span class="badge badge-blue" x-text="(t.status === 'enrolled' ? 'Sample of ' : 'Assigned to ') + (t.assigned_name || 'profile')"></span>
                                 </template>
                                 <template x-if="!t.assigned">
                                     <div class="voice-turn-assign">
@@ -823,10 +832,10 @@ function voiceProfilesPage() {
 
         async loadSamples(profileId) {
             var previous = this.samples[profileId];
-            this.samples[profileId] = { open: true, loading: true, items: previous ? previous.items : [] };
+            this.samples[profileId] = { open: true, loading: true, items: previous ? previous.items : [], overlap: previous ? previous.overlap : [] };
             try {
                 var data = await window.dashboardApi.json('/api/admin/voice/profiles/' + profileId + '/samples');
-                this.samples[profileId] = { open: true, loading: false, items: (data && data.samples) || [] };
+                this.samples[profileId] = { open: true, loading: false, items: (data && data.samples) || [], overlap: (data && data.overlap) || [] };
             } catch (e) {
                 this.samples[profileId] = { open: false, loading: false, items: [] };
                 if (e.code === 'auth_expired') return;
@@ -836,7 +845,25 @@ function voiceProfilesPage() {
 
         sampleTitle(sample) {
             if (sample.pre_vad) return 'Recorded before silence trimming; re-enrollment recommended';
-            return this.sampleSuspect(sample) ? 'Does not fit this profile well; consider deleting it' : null;
+            if (!this.sampleSuspect(sample)) return null;
+            if (this.sampleCloserToOther(sample)) return 'Scores at least as high against ' + sample.best_other_name + ' as against this profile: possibly the wrong speaker; listen to its recording or delete it';
+            return 'Does not fit this profile well; consider deleting it';
+        },
+
+        sampleCloserToOther(sample) {
+            var own = sample.loo_score;
+            var other = sample.best_other_score;
+            return own !== null && own !== undefined && other !== null && other !== undefined && other >= own;
+        },
+
+        overlapLabel(overlap) {
+            return (overlap || []).map(item => item.name + ' ' + this.fmt2(item.score)).join(', ');
+        },
+
+        overlapHigh(overlap) {
+            var threshold = Number(this.s['voice.speaker_id.threshold']);
+            if (!overlap || !overlap.length || Number.isNaN(threshold)) return false;
+            return overlap[0].score >= threshold;
         },
 
         sampleSuspect(sample) {
@@ -846,7 +873,7 @@ function voiceProfilesPage() {
             var other = sample.best_other_score;
             var minSimilarity = Number(this.s['voice.speaker_id.enroll_min_similarity']);
             if (own !== null && own !== undefined && !Number.isNaN(minSimilarity) && own < minSimilarity) return true;
-            return own !== null && own !== undefined && other !== null && other !== undefined && other > own;
+            return this.sampleCloserToOther(sample);
         },
 
         async deleteSample(p, sample) {
@@ -944,13 +971,17 @@ function voiceProfilesPage() {
 
         reasonLabel(reason) {
             var labels = {
-                rejected_other_speaker: 'sounds like another profile',
                 rejected_inconsistent: "does not match this profile's earlier samples",
                 rejected_too_short: 'too little speech',
                 no_speech: 'no speech detected',
                 engine_not_ready: 'engine not ready',
             };
             return labels[reason] || (reason || '').replace(/_/g, ' ');
+        },
+
+        warningLabel(warning, name, score) {
+            if (warning === 'closer_to_other') return 'sounds like ' + (name || 'another profile') + (score !== null && score !== undefined ? ' ' + this.fmt2(score) : '');
+            return (warning || '').replace(/_/g, ' ');
         },
 
         fmt2(value) {
@@ -971,6 +1002,7 @@ function voiceProfilesPage() {
             if (this.turnsFilter === 'unassigned') params.set('assigned', 'false');
             if (this.turnsFilter === 'unknown') params.set('status', 'unknown');
             if (this.turnsFilter === 'no_profiles') params.set('status', 'no_profiles');
+            if (this.turnsFilter === 'enrolled') params.set('status', 'enrolled');
             return params.toString();
         },
 
@@ -1009,6 +1041,7 @@ function voiceProfilesPage() {
         turnSpeaker(t) {
             if (t.status === 'identified') return (t.speaker_name || 'deleted profile') + ' ' + this.fmt2(t.score);
             if (t.status === 'no_profiles') return 'no profiles yet';
+            if (t.status === 'enrolled') return 'enrollment of ' + (t.speaker_name || 'deleted profile') + ', own fit ' + this.fmt2(t.score);
             return 'best score ' + this.fmt2(t.score);
         },
 
@@ -1040,7 +1073,10 @@ function voiceProfilesPage() {
                 });
                 this.clearRejection(t);
                 var profile = this.profiles.find(p => p.id === profileId);
-                window.toast('Sample added to ' + (profile ? profile.name : 'profile') + (result && result.forced ? ' (guard overridden)' : ''), 'success');
+                var guard = (result && result.guard) || {};
+                var note = result && result.forced ? ' (guard overridden)' : '';
+                if (guard.warning) note += ' - warning: ' + this.warningLabel(guard.warning, guard.warning_name, guard.warning_score);
+                window.toast('Sample added to ' + (profile ? profile.name : 'profile') + note, guard.warning ? 'info' : 'success');
                 await Promise.all([this.loadTurns(), this.loadProfiles()]);
                 var entry = this.samples[profileId];
                 if (entry && entry.open) await this.loadSamples(profileId);
@@ -1087,7 +1123,7 @@ function voiceProfilesPage() {
 
         resultBadge(status) {
             if (status === 'identified') return 'badge-green';
-            if (status === 'enrolled_sample') return 'badge-blue';
+            if (status === 'enrolled_sample' || status === 'enrolled') return 'badge-blue';
             if (status === 'unknown' || status === 'rejected_sample') return 'badge-yellow';
             if (status === 'error' || status === 'unavailable' || status === 'unsupported_audio') return 'badge-red';
             return 'badge-muted';

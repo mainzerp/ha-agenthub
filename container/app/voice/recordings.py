@@ -4,8 +4,10 @@ With ``voice.speaker_id.keep_audio`` on, every identification turn that
 produced an embedding (``identified`` or ``unknown``) is kept: the exact
 voice-activity-trimmed PCM that was embedded is written as a 16 kHz mono
 16-bit WAV to ``<data dir>/voice_turns/<id>.wav`` and a ``voice_turns`` row
-stores the result and the embedding. Enrollment turns are never recorded.
-Recordings expire after ``voice.speaker_id.audio_retention_days`` (see
+stores the result and the embedding. Every committed enrollment sample is
+recorded the same way as a turn with status ``enrolled``, linked to its new
+sample through the ``assigned_*`` columns; rejected and unconfirmed
+enrollment turns are never recorded. Recordings expire after ``voice.speaker_id.audio_retention_days`` (see
 :func:`cleanup_recordings`). The audio never leaves the container.
 
 File names are always ``<32 hex chars>.wav``; every path from the database
@@ -35,6 +37,9 @@ from app.voice.audio import BYTES_PER_SAMPLE, SUPPORTED_CHANNELS
 logger = logging.getLogger(__name__)
 
 RECORDINGS_DIR_NAME = "voice_turns"
+# ``voice_turns.status`` of a recorded enrollment sample (identification turns
+# keep their result status: ``identified``, ``unknown``, ``no_profiles``).
+TURN_STATUS_ENROLLED = "enrolled"
 # Files without a database row are deleted only after this grace period: a
 # recording writes its file before it inserts the row.
 ORPHAN_GRACE_S = 3600.0
@@ -137,6 +142,9 @@ class TurnRecording:
     profile_id: int | None = None
     score: float | None = None
     margin: float | None = None
+    # The enrollment sample made from this turn (``enrolled`` recordings).
+    assigned_profile_id: int | None = None
+    assigned_sample_id: int | None = None
 
 
 def _write_recording(path: Path, pcm: bytes, sample_rate: int) -> None:
@@ -167,6 +175,8 @@ async def store_recording(recording: TurnRecording) -> bool:
             speaker_profile_id=recording.profile_id,
             score=recording.score,
             margin=recording.margin,
+            assigned_profile_id=recording.assigned_profile_id,
+            assigned_sample_id=recording.assigned_sample_id,
         )
     except Exception:
         logger.warning("Storing voice recording %s failed", name, exc_info=True)

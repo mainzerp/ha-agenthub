@@ -27,8 +27,20 @@ from app.voice.enrollment import (
     MIN_ENROLL_SAMPLES,
     MIN_ENROLL_TIMEOUT_S,
 )
-from app.voice.profiles import EnrollmentCheck, check_enrollment_sample, sample_diagnostics, scores_payload
-from app.voice.recordings import audio_file_path, delete_audio_files, is_valid_turn_id, read_wav_pcm
+from app.voice.profiles import (
+    EnrollmentCheck,
+    centroid_overlap,
+    check_enrollment_sample,
+    sample_diagnostics,
+    scores_payload,
+)
+from app.voice.recordings import (
+    TURN_STATUS_ENROLLED,
+    audio_file_path,
+    delete_audio_files,
+    is_valid_turn_id,
+    read_wav_pcm,
+)
 from app.voice.service import (
     STATUS_IDENTIFIED,
     STATUS_NO_PROFILES,
@@ -64,12 +76,12 @@ class VoiceEnrollRequest(BaseModel):
 
 class VoiceTurnAssign(BaseModel):
     profile_id: int
-    # Store the sample even when the enrollment guard rejects it.
+    # Store the sample even when the enrollment guard rejects it (``rejected_inconsistent``).
     force: bool = False
 
 
 MAX_TURNS_PAGE = 200
-_TURN_STATUSES = frozenset({STATUS_IDENTIFIED, STATUS_UNKNOWN, STATUS_NO_PROFILES})
+_TURN_STATUSES = frozenset({STATUS_IDENTIFIED, STATUS_UNKNOWN, STATUS_NO_PROFILES, TURN_STATUS_ENROLLED})
 
 
 async def _require_profile(profile_id: int) -> dict[str, Any]:
@@ -195,7 +207,9 @@ async def list_voice_samples(profile_id: int) -> dict[str, Any]:
     ``best_other_score`` (closest other profile). Samples of another model
     never join a centroid and carry no scores. ``pre_vad`` marks a sample
     stored without silence trimming (``speech_s`` NULL): it was embedded with
-    its silence and should be re-enrolled.
+    its silence and should be re-enrolled. ``overlap`` lists the cosine
+    between this profile's centroid and every other profile's centroid
+    (highest first; empty without samples of the current model).
     """
     await _require_profile(profile_id)
     service = get_speaker_service()
@@ -223,7 +237,8 @@ async def list_voice_samples(profile_id: int) -> dict[str, Any]:
                 "best_other_score": diag.get("best_other_score"),
             }
         )
-    return {"profile_id": profile_id, "model": model, "samples": samples}
+    overlap = await asyncio.to_thread(centroid_overlap, profile_id, centroids)
+    return {"profile_id": profile_id, "model": model, "samples": samples, "overlap": overlap}
 
 
 @router.delete("/profiles/{profile_id}/samples/{sample_id}")
@@ -310,7 +325,7 @@ async def _require_turn(turn_id: str) -> dict[str, Any]:
 
 
 def _guard_payload(check: EnrollmentCheck, profile_id: int) -> dict[str, Any]:
-    """Enrollment-guard outcome: ``reason`` (None = accepted) and the scores it decided on."""
+    """Enrollment-guard outcome: ``reason`` (None = accepted), ``warning`` and the scores it decided on."""
     others = [item for item in check.ranked if item.profile.profile_id != profile_id]
     best_other = others[0] if others else None
     best_other_score = round(best_other.score, 4) if best_other is not None else None
@@ -319,8 +334,12 @@ def _guard_payload(check: EnrollmentCheck, profile_id: int) -> dict[str, Any]:
         if check.own_score is not None and best_other_score is not None
         else None
     )
+    warned = check.warning_profile
     return {
         "reason": check.reason,
+        "warning": check.warning,
+        "warning_name": warned.profile.name if warned is not None else None,
+        "warning_score": round(warned.score, 4) if warned is not None else None,
         "scores": {
             "own": check.own_score,
             "best_other": best_other_score,
@@ -355,7 +374,7 @@ async def list_voice_turns(
     ``assignable`` means the turn has enough speech for an enrollment sample.
     """
     if status is not None and status not in _TURN_STATUSES:
-        raise HTTPException(status_code=422, detail="status must be identified, unknown or no_profiles")
+        raise HTTPException(status_code=422, detail="status must be identified, unknown, no_profiles or enrolled")
     config = await load_voice_config()
     model = get_speaker_service().engine.model_id
     rows, total = await VoiceTurnRepository.list_turns(limit=limit, offset=offset, status=status, assigned=assigned)
@@ -385,9 +404,13 @@ async def assign_voice_turn(turn_id: str, body: VoiceTurnAssign) -> dict[str, An
     """Store a recorded turn as an enrollment sample of a profile.
 
     Independent of an armed enrollment (whose state stays untouched). The
-    enrollment guard runs against the target profile; a rejection is
-    returned as 409 ``guard_rejected`` unless ``force`` overrides it. A turn
-    recorded with another speaker model is re-embedded from its audio.
+    enrollment guard runs against the target profile; a rejection
+    (``rejected_inconsistent``) is returned as 409 ``guard_rejected`` unless
+    ``force`` overrides it. The assignment declares the speaker, so a turn
+    that sounds like another profile is stored with ``guard.warning``
+    ``closer_to_other``. A turn recorded with another speaker model is
+    re-embedded from its audio. A turn already linked to a sample (an
+    assigned or recorded enrollment turn) is refused as ``already_assigned``.
     """
     turn = await _require_turn(turn_id)
     profile = await _require_profile(body.profile_id)
@@ -472,11 +495,12 @@ async def assign_voice_turn(turn_id: str, body: VoiceTurnAssign) -> dict[str, An
     service.invalidate_profiles()
     forced = check.reason is not None
     logger.info(
-        "Assigned voice turn %s to profile %s as sample %s%s",
+        "Assigned voice turn %s to profile %s as sample %s%s%s",
         turn_id,
         body.profile_id,
         sample_id,
         f" (guard override: {check.reason})" if forced else "",
+        f" (warning: {check.warning}, best_other={guard['warning_score']})" if check.warning else "",
     )
     return {
         "ok": True,

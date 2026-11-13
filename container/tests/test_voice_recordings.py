@@ -1,4 +1,4 @@
-"""Recorded voice turns: migration 53, repository, capture, trace link, retention and admin API."""
+"""Recorded voice turns: migration 53, repository, capture, enrollment recordings, trace link, retention, admin API."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from app.db.schema._migrations import _migrate_to_53
 from app.models.agent import TaskContext
 from app.voice import service as voice_service
 from app.voice.recordings import (
+    TURN_STATUS_ENROLLED,
     TurnRecording,
     audio_file_path,
     cleanup_recordings,
@@ -180,6 +181,35 @@ class TestMigrationAndSettings:
             assert (await cursor.fetchone())[0] == 1
         finally:
             await shutdown_aiosqlite(db)
+
+    async def test_migrated_table_accepts_enrollment_recordings(self, db_repository):
+        """``enrolled`` needs no schema change: a table created by migration 53 stores and links it."""
+        db = await aiosqlite.connect(str(db_repository))
+        try:
+            await db.execute("DROP TABLE voice_turns")
+            await db.commit()
+            await _migrate_to_53(db)
+            await db.commit()
+        finally:
+            await shutdown_aiosqlite(db)
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        sample_id = await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0, 0), 3, _MODEL, 3.0, 2.5)
+        turn_id = new_turn_id()
+        assert await store_recording(
+            TurnRecording(
+                turn_id=turn_id,
+                pcm=_pcm(2.0),
+                sample_rate=_RATE,
+                vector=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                model_id=_MODEL,
+                status=TURN_STATUS_ENROLLED,
+                profile_id=anna["id"],
+                assigned_profile_id=anna["id"],
+                assigned_sample_id=sample_id,
+            )
+        )
+        rows, total = await VoiceTurnRepository.list_turns(status=TURN_STATUS_ENROLLED)
+        assert total == 1 and rows[0]["assigned_sample_id"] == sample_id
 
     async def test_defaults_and_config(self, db_repository):
         assert await SettingsRepository.get_value("voice.speaker_id.keep_audio") == "false"
@@ -349,7 +379,7 @@ class TestCapture:
         assert "voice_turn_id" not in analysis.result
         assert await VoiceTurnRepository.count() == 0
 
-    async def test_armed_enrollment_turn_is_not_recorded(self, db_repository):
+    async def test_armed_enrollment_turn_is_not_recorded_before_commit(self, db_repository):
         profile = await VoiceProfileRepository.create_profile("Anna")
         service = _capture_service([[0.98, 0.05, 0.0]])
         service.enrollment.arm(profile["id"], "Anna", 3, 300)
@@ -386,7 +416,192 @@ class TestCapture:
             service.enrollment.arm(profile["id"], "Ben", 3, 300)
             ws = _make_ws([_start("conv-2"), {"type": "websocket.receive", "bytes": _pcm(2.5)}, _text({"type": "end"})])
             await voice_routes.VoiceTurnSession(ws, service).run()
+            await service.wait_recordings()
+            # No identification recording; the committed enrollment sample is recorded instead.
             assert spy.await_args.kwargs["record"] is False
+            assert _results(ws)[0]["status"] == "enrolled_sample"
+            rows, total = await VoiceTurnRepository.list_turns(status=TURN_STATUS_ENROLLED)
+            assert total == 1 and rows[0]["conversation_id"] == "conv-2"
+
+
+# ---------------------------------------------------------------------------
+# Enrollment recordings
+# ---------------------------------------------------------------------------
+
+
+def _enroll_service(vectors: list[list[float]], speech_s: float = 2.0) -> SpeakerIdService:
+    """Real centroid cache (database profiles) and a VAD that keeps ``speech_s`` seconds."""
+    return SpeakerIdService(engine=FakeEngine(vectors), vad=_ShortVad(speech_s))
+
+
+async def _enroll(service: SpeakerIdService, config: VoiceConfig, conversation_id: str = "conv-e"):
+    analysis = await service.analyze_turn(_pcm(2.5), _RATE, config, conversation_id=conversation_id)
+    if analysis.pending is not None:
+        result = await service.commit_enrollment(analysis.pending)
+    elif analysis.rejection is not None:
+        result = service.commit_rejection(analysis.rejection)
+    else:
+        result = analysis.result
+    await service.wait_recordings()
+    return analysis, result
+
+
+@pytest.mark.usefixtures("recording_enabled")
+class TestEnrollmentRecordings:
+    async def test_committed_sample_is_recorded_and_linked(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        analysis, result = await _enroll(service, _config())
+        assert result["status"] == "enrolled_sample"
+        # The trimmed PCM travels with the pending sample only for the recording.
+        assert analysis.pending.pcm == _pcm(2.5)[: 2 * _RATE * 2]
+
+        sample_id = (await VoiceProfileRepository.list_samples(anna))[-1]["id"]
+        rows, total = await VoiceTurnRepository.list_turns(status=TURN_STATUS_ENROLLED)
+        assert total == 1
+        turn = await VoiceTurnRepository.get_turn(rows[0]["id"])
+        assert turn["status"] == "enrolled" and turn["conversation_id"] == "conv-e"
+        assert turn["speaker_profile_id"] == anna
+        assert turn["assigned_profile_id"] == anna and turn["assigned_sample_id"] == sample_id
+        assert turn["assigned_at"] is not None
+        assert turn["speech_s"] == pytest.approx(2.0) and turn["duration_s"] == pytest.approx(2.5)
+        assert turn["score"] == pytest.approx(result["score"]) and turn["margin"] is not None
+        assert np.allclose(np.frombuffer(turn["embedding"], dtype=np.float32), [0.98, 0.05, 0.0])
+        recorded, rate = read_wav_pcm(audio_file_path(turn["audio_path"]))
+        assert rate == _RATE and recorded == analysis.pending.pcm
+        # The identification recording path stays untouched by enrollment turns.
+        assert "voice_turn_id" not in result
+
+    async def test_sample_with_warning_is_recorded(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.05, 0.98, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        _analysis, result = await _enroll(service, _config())
+        assert result["status"] == "enrolled_sample" and result["warning"] == "closer_to_other"
+        assert (await VoiceTurnRepository.list_turns(status=TURN_STATUS_ENROLLED))[1] == 1
+
+    async def test_keep_audio_off_records_nothing(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        analysis, result = await _enroll(service, _config(keep_audio=False))
+        assert result["status"] == "enrolled_sample" and analysis.pending.pcm == b""
+        assert await VoiceTurnRepository.count() == 0
+        assert not list(recordings_dir().glob("*.wav"))
+
+    async def test_recording_turned_off_before_commit_records_nothing(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        analysis = await service.analyze_turn(_pcm(2.5), _RATE, _config())
+        await SettingsRepository.set("voice.speaker_id.keep_audio", "false", "bool", "voice")
+        result = await service.commit_enrollment(analysis.pending)
+        await service.wait_recordings()
+        assert result["status"] == "enrolled_sample"
+        assert await VoiceTurnRepository.count() == 0
+
+    @pytest.mark.parametrize(
+        ("vector", "speech_s"),
+        [([0.0, 0.0, 1.0], 2.0), ([0.98, 0.05, 0.0], 1.0)],
+        ids=["inconsistent", "too_short"],
+    )
+    async def test_rejected_sample_records_nothing(self, db_repository, vector, speech_s):
+        anna, _ben = await _two_profiles()
+        # A second sample: the consistency rule applies.
+        await VoiceProfileRepository.add_sample(anna, _vec(1, 0.05, 0), 3, _MODEL, 3.0, 2.5)
+        service = _enroll_service([vector], speech_s=speech_s)
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        _analysis, result = await _enroll(service, _config())
+        assert result["reason"] in ("rejected_inconsistent", "rejected_too_short")
+        assert await VoiceTurnRepository.count() == 0
+        assert not list(recordings_dir().glob("*.wav"))
+
+    async def test_storing_failure_never_fails_the_enrollment(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        with patch.object(VoiceTurnRepository, "add_turn", AsyncMock(side_effect=aiosqlite.OperationalError("x"))):
+            _analysis, result = await _enroll(service, _config())
+        assert result["status"] == "enrolled_sample"
+        assert await VoiceProfileRepository.count_samples(anna) == 2
+        assert service.enrollment.current()["remaining"] == 2
+        assert not list(recordings_dir().glob("*.wav"))
+
+    @pytest.mark.parametrize(
+        "tail",
+        [[_text({"type": "abort"})], []],
+        ids=["abort", "disconnect"],
+    )
+    async def test_unconfirmed_enrollment_turn_records_nothing(self, db_repository, tail):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        with patch.object(voice_routes, "load_voice_config", AsyncMock(return_value=_config())):
+            ws = _paced_ws([_start(), _audio_frame(), _text({"type": "audio_end"}), *tail])
+            await voice_routes.VoiceTurnSession(ws, service).run()
+            await _drain(service)
+        assert await VoiceProfileRepository.count_samples(anna) == 1
+        assert await VoiceTurnRepository.count() == 0
+        assert not list(recordings_dir().glob("*.wav"))
+
+    async def test_confirmed_enrollment_turn_is_recorded(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        with patch.object(voice_routes, "load_voice_config", AsyncMock(return_value=_config())):
+            ws = _paced_ws([_start(), _audio_frame(), _text({"type": "audio_end"}), _text({"type": "end"})])
+            await voice_routes.VoiceTurnSession(ws, service).run()
+            await _drain(service)
+        assert _results(ws)[0]["status"] == "enrolled_sample"
+        rows, total = await VoiceTurnRepository.list_turns()
+        assert total == 1 and rows[0]["status"] == "enrolled" and rows[0]["conversation_id"] == "conv-1"
+
+    async def test_link_written_only_while_the_sample_exists(self, db_repository):
+        anna, _ben = await _two_profiles()
+        sample_id = (await VoiceProfileRepository.list_samples(anna))[0]["id"]
+        linked = new_turn_id()
+        dangling = new_turn_id()
+        for turn_id, target in ((linked, sample_id), (dangling, sample_id + 999)):
+            assert await store_recording(
+                TurnRecording(
+                    turn_id=turn_id,
+                    pcm=_pcm(2.0),
+                    sample_rate=_RATE,
+                    vector=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                    model_id=_MODEL,
+                    status=TURN_STATUS_ENROLLED,
+                    profile_id=anna,
+                    assigned_profile_id=anna,
+                    assigned_sample_id=target,
+                )
+            )
+        turn = await VoiceTurnRepository.get_turn(linked)
+        assert turn["assigned_sample_id"] == sample_id and turn["assigned_profile_id"] == anna
+        # The outlier review deleted the sample before the row was written: no dangling link.
+        gone = await VoiceTurnRepository.get_turn(dangling)
+        assert gone["assigned_sample_id"] is None and gone["assigned_profile_id"] is None
+        assert gone["assigned_at"] is None and gone["speaker_profile_id"] == anna
+
+    async def test_retention_expires_enrollment_recordings(self, db_repository):
+        anna, _ben = await _two_profiles()
+        service = _enroll_service([[0.98, 0.05, 0.0]])
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        await _enroll(service, _config())
+        rows, _ = await VoiceTurnRepository.list_turns()
+        turn_id = rows[0]["id"]
+        db = await aiosqlite.connect(str(db_repository))
+        try:
+            stamp = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+            await db.execute("UPDATE voice_turns SET created_at = ? WHERE id = ?", (stamp, turn_id))
+            await db.commit()
+        finally:
+            await shutdown_aiosqlite(db)
+        assert (await cleanup_recordings(30))["expired"] == 1
+        assert await VoiceTurnRepository.count() == 0
+        assert not (recordings_dir() / f"{turn_id}.wav").exists()
+        # The sample made from it stays.
+        assert await VoiceProfileRepository.count_samples(anna) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -595,24 +810,41 @@ class TestVoiceTurnsApi:
         listed = (await client.get("/api/admin/voice/turns", params={"assigned": "false"})).json()
         assert listed["total"] == 0
 
+    async def test_other_speaker_assignment_accepted_with_warning(self, admin_client):
+        client, _service = admin_client
+        anna, _ben = await _two_profiles()
+        turn_id = await _record(vector=(0.0, 1.0, 0.0))
+
+        assigned = await client.post(f"/api/admin/voice/turns/{turn_id}/assign", json={"profile_id": anna})
+        assert assigned.status_code == 200
+        body = assigned.json()
+        assert body["forced"] is False and body["guard"]["reason"] is None
+        assert body["guard"]["warning"] == "closer_to_other" and body["guard"]["warning_name"] == "Ben"
+        assert body["guard"]["warning_score"] == pytest.approx(1.0, abs=1e-4)
+        assert body["guard"]["scores"]["best_other_name"] == "Ben"
+        assert await VoiceProfileRepository.count_samples(anna) == 2
+
     async def test_guard_rejection_and_force(self, admin_client):
         client, _service = admin_client
         anna, _ben = await _two_profiles()
+        # A second sample: the consistency rule applies to the assignment.
+        await VoiceProfileRepository.add_sample(anna, _vec(1, 0.05, 0), 3, _MODEL, 3.0, 2.5)
         turn_id = await _record(vector=(0.0, 1.0, 0.0))
 
         rejected = await client.post(f"/api/admin/voice/turns/{turn_id}/assign", json={"profile_id": anna})
         assert rejected.status_code == 409
         body = rejected.json()
-        assert body["error"] == "guard_rejected" and body["reason"] == "rejected_other_speaker"
+        assert body["error"] == "guard_rejected" and body["reason"] == "rejected_inconsistent"
         assert body["scores"]["best_other_name"] == "Ben"
-        assert body["scores"]["own"] == pytest.approx(0.0, abs=1e-4)
+        assert body["scores"]["own"] < 0.45
         assert body["detail"]
-        assert await VoiceProfileRepository.count_samples(anna) == 1
+        assert await VoiceProfileRepository.count_samples(anna) == 2
 
         forced = await client.post(f"/api/admin/voice/turns/{turn_id}/assign", json={"profile_id": anna, "force": True})
         assert forced.status_code == 200
-        assert forced.json()["forced"] is True and forced.json()["guard"]["reason"] == "rejected_other_speaker"
-        assert await VoiceProfileRepository.count_samples(anna) == 2
+        assert forced.json()["forced"] is True and forced.json()["guard"]["reason"] == "rejected_inconsistent"
+        assert forced.json()["guard"]["warning"] == "closer_to_other"
+        assert await VoiceProfileRepository.count_samples(anna) == 3
 
     async def test_assign_errors(self, admin_client):
         client, _service = admin_client
@@ -871,6 +1103,72 @@ class TestReviewApi:
         by_id = {item["id"]: item for item in (await client.get("/api/admin/voice/turns")).json()["turns"]}
         assert by_id[linked]["trace_match"] == "lookup" and by_id[linked]["trace_id"] == "trace-a"
         assert by_id[unlinked]["trace_match"] == "time_window" and by_id[unlinked]["transcript"] == "lights off"
+
+    @pytest.mark.usefixtures("recording_enabled")
+    async def test_enrolled_turns_api(self, admin_client):
+        client, service = admin_client
+        anna, ben = await _two_profiles()
+        service.engine.vectors = [[0.98, 0.05, 0.0]]
+        service.vad = _ShortVad(2.0)
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        await _enroll(service, _config())
+        other = await _record(status="unknown")
+
+        listed = (await client.get("/api/admin/voice/turns", params={"status": "enrolled"})).json()
+        assert listed["total"] == 1
+        turn = listed["turns"][0]
+        assert turn["status"] == "enrolled" and turn["id"] != other
+        assert turn["assigned"] is True and turn["assigned_name"] == "Anna" and turn["speaker_name"] == "Anna"
+        audio = await client.get(f"/api/admin/voice/turns/{turn['id']}/audio")
+        assert audio.status_code == 200 and audio.content[:4] == b"RIFF"
+
+        # Assigning it again never creates a duplicate sample, for either profile.
+        for profile_id in (anna, ben):
+            again = await client.post(f"/api/admin/voice/turns/{turn['id']}/assign", json={"profile_id": profile_id})
+            assert again.status_code == 409 and again.json()["error"] == "already_assigned"
+        assert await VoiceProfileRepository.count_samples(anna) == 2
+        assert await VoiceProfileRepository.count_samples(ben) == 1
+
+        # Deleting its sample unlinks it (assignable again), like an assigned turn.
+        deleted = await client.delete(f"/api/admin/voice/profiles/{anna}/samples/{turn['assigned_sample_id']}")
+        assert deleted.status_code == 200
+        unassigned = (await client.get("/api/admin/voice/turns", params={"assigned": "false"})).json()
+        assert turn["id"] in {item["id"] for item in unassigned["turns"]}
+        relinked = await client.post(f"/api/admin/voice/turns/{turn['id']}/assign", json={"profile_id": anna})
+        assert relinked.status_code == 200
+        assert await VoiceProfileRepository.count_samples(anna) == 2
+
+        # Profile delete with recordings removes it (identified-as link survives the unassignment).
+        response = await client.delete(f"/api/admin/voice/profiles/{anna}", params={"delete_recordings": "true"})
+        assert response.status_code == 200 and response.json()["deleted_recordings"] == 1
+        assert await VoiceTurnRepository.get_turn(turn["id"]) is None
+        assert not (recordings_dir() / f"{turn['id']}.wav").exists()
+        assert await VoiceTurnRepository.get_turn(other) is not None
+
+    @pytest.mark.usefixtures("recording_enabled")
+    async def test_enrolled_turns_delete_one_and_all(self, admin_client):
+        client, service = admin_client
+        anna, _ben = await _two_profiles()
+        service.engine.vectors = [[0.98, 0.05, 0.0], [0.97, 0.06, 0.0]]
+        service.vad = _ShortVad(2.0)
+        service.enrollment.arm(anna, "Anna", 3, 300)
+        await _enroll(service, _config())
+        await _enroll(service, _config())
+        rows, total = await VoiceTurnRepository.list_turns(status=TURN_STATUS_ENROLLED)
+        assert total == 2
+        assert (await client.delete(f"/api/admin/voice/turns/{rows[0]['id']}")).status_code == 200
+        assert not (recordings_dir() / f"{rows[0]['id']}.wav").exists()
+        deleted = await client.delete("/api/admin/voice/turns")
+        assert deleted.status_code == 200 and deleted.json()["deleted"] == 1
+        assert not list(recordings_dir().glob("*.wav"))
+        # Samples made from the recordings stay.
+        assert await VoiceProfileRepository.count_samples(anna) == 3
+
+    async def test_samples_report_profile_overlap(self, admin_client):
+        client, _service = admin_client
+        anna, _ben = await _two_profiles()
+        body = (await client.get(f"/api/admin/voice/profiles/{anna}/samples")).json()
+        assert body["overlap"] == [{"profile_id": _ben, "name": "Ben", "score": pytest.approx(0.0, abs=1e-4)}]
 
     async def test_no_profiles_status_filter(self, admin_client):
         client, _service = admin_client

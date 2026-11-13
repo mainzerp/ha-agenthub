@@ -7,6 +7,7 @@ import json
 import logging
 import struct
 import time
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -174,6 +175,9 @@ class TestVoiceWsProtocol:
             "second_name",
             "second_score",
             "reason",
+            "warning",
+            "warning_name",
+            "warning_score",
             "compute_ms",
             "latency_ms",
         }
@@ -432,8 +436,14 @@ class TestVoiceWsEnrollmentConfirmation:
         assert service.enrollment.current()["remaining"] == 2
         assert _results(ws)[0]["reason"] == "aborted"
 
+    @staticmethod
+    def _ben_with_two_samples(service) -> None:
+        """Ben's centroid stands for two samples, so the consistency rule applies to his next sample."""
+        service.centroids.centroids[1] = replace(service.centroids.centroids[1], sample_count=2)
+
     async def test_rejected_sample_counts_only_after_end(self, service, enabled):
-        # Arming Ben while the voice matches Anna: the sample guard rejects it.
+        # Arming Ben (two samples) while the voice matches Anna: rejected as inconsistent.
+        self._ben_with_two_samples(service)
         service.enrollment.arm(2, "Ben", samples=2, timeout_s=60)
         ws, queue, session = await self._run_until_processed(
             service, [_start(), _binary(_pcm(2.5)), _text({"type": "audio_end"})]
@@ -446,14 +456,36 @@ class TestVoiceWsEnrollmentConfirmation:
         await asyncio.wait_for(session, 2.0)
 
         result = _results(ws)[0]
-        assert result["status"] == "rejected_sample" and result["reason"] == "rejected_other_speaker"
+        assert result["status"] == "rejected_sample" and result["reason"] == "rejected_inconsistent"
         armed = service.enrollment.current()
         assert armed["rejected"] == 1 and armed["remaining"] == 2
-        assert armed["last_rejection"]["reason"] == "rejected_other_speaker"
+        assert armed["last_rejection"]["reason"] == "rejected_inconsistent"
         assert [r["status"] for r in service.store.recent()] == ["rejected_sample"]
+
+    async def test_other_speaker_sample_stored_with_warning_after_end(self, service, enabled):
+        # Arming Ben (one sample) while the voice matches Anna: stored, flagged ``closer_to_other``.
+        service.enrollment.arm(2, "Ben", samples=2, timeout_s=60)
+        add_sample = AsyncMock(return_value=41)
+        with patch.object(voice_service.VoiceProfileRepository, "add_sample", add_sample):
+            ws, queue, session = await self._run_until_processed(
+                service, [_start(), _binary(_pcm(2.5)), _text({"type": "audio_end"})]
+            )
+            assert service.enrollment.current()["warnings"] == 0
+            await queue.put(_text({"type": "end", "transcript_chars": 9}))
+            await asyncio.wait_for(session, 2.0)
+
+        add_sample.assert_awaited_once()
+        result = _results(ws)[0]
+        assert result["status"] == "enrolled_sample" and result["reason"] is None
+        assert result["warning"] == "closer_to_other" and result["warning_name"] == "Anna"
+        armed = service.enrollment.current()
+        assert armed["remaining"] == 1 and armed["rejected"] == 0 and armed["warnings"] == 1
+        assert armed["last_warning"]["name"] == "Anna"
+        assert service.store.recent()[0]["warning"] == "closer_to_other"
 
     @pytest.mark.parametrize("closing", [_text({"type": "abort"}), _DISCONNECT])
     async def test_unconfirmed_rejection_records_nothing(self, service, enabled, closing):
+        self._ben_with_two_samples(service)
         service.enrollment.arm(2, "Ben", samples=2, timeout_s=60)
         _ws, queue, session = await self._run_until_processed(
             service, [_start(), _binary(_pcm(2.5)), _text({"type": "audio_end"})]

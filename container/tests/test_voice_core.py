@@ -283,6 +283,9 @@ class TestTurnStore:
             "speech_s",
             "vad",
             "reason",
+            "warning",
+            "warning_name",
+            "warning_score",
             "compute_ms",
             "latency_ms",
         }

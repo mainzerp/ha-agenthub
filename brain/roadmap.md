@@ -39,6 +39,24 @@ Live pipeline in board format — headings are columns, cards are
 
 ## In Progress
 
+- Voice: order-independent enrollment, enrollment audio, model benchmark · priority: P1 · area: voice
+  Trigger: live analysis 2026-11-13 after a fresh re-enrollment (10 samples
+  each). Laura enrolled first; 7 of Patric's 18 attempts were rejected as
+  "other speaker" (Laura score 0.69-0.89), so his profile kept atypical
+  samples: his own test turns scored 0.49/0.50 against it and one was
+  identified as Laura (0.73). Same-speaker CAM++ cosine on the Echo Show 5
+  ranged 0.21-0.87, cross-speaker 0.52-0.66.
+  Done locally (uncommitted): armed enrollment and assignment accept
+  other-speaker/near-tie samples with a `closer_to_other` warning; committed
+  samples are recorded as `enrolled` voice turns with `keep_audio`; sample
+  list shows profile overlap. Passed: ruff; voice tests 388 passed; full
+  container suite 5690 passed, 4 skipped. Offline benchmark harness with 11
+  sherpa-onnx models ready (session scratchpad), smoke run only.
+  Next: commit + test image (needs user OK), re-enroll, run benchmark on
+  the `enrolled` recordings, pick model, threshold and margin.
+  Verify: deploy test image, both re-enroll 10 sentences on the Echo Show 5,
+  enrollment turns appear with audio on `/dashboard/voice-profiles`.
+
 ## Testing
 
 - Strip leading wake word from voice transcripts · priority: P2 · area: conversation

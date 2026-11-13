@@ -33,6 +33,7 @@ from app.voice.profiles import (
     scores_payload,
 )
 from app.voice.recordings import (
+    TURN_STATUS_ENROLLED,
     TurnRecording,
     audio_file_name,
     delete_audio_files,
@@ -107,6 +108,13 @@ class PendingEnrollment:
     diagnostics: dict[str, Any] | None = None
     # ``voice.speaker_id.enroll_min_similarity`` of the analysis (session outlier review at the commit).
     enroll_min_similarity: float = _DEFAULT_ENROLL_MIN_SIMILARITY
+    # VAD-trimmed PCM kept for the enrollment recording (only with ``keep_audio``;
+    # bounded by the 30 s turn cap). Empty: the committed sample is not recorded.
+    pcm: bytes = b""
+    sample_rate: int = 0
+    conversation_id: str | None = None
+    # Own score minus the closest other profile's score (None without both).
+    lead: float | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +219,9 @@ def make_result(
     scores: list[dict[str, Any]] | None = None,
     second_name: str | None = None,
     second_score: float | None = None,
+    warning: str | None = None,
+    warning_name: str | None = None,
+    warning_score: float | None = None,
 ) -> dict[str, Any]:
     """Build the canonical speaker-identification result dict.
 
@@ -222,7 +233,9 @@ def make_result(
     was used; None: not analysed). ``scores`` lists every profile's score
     (best first) and ``second_name``/``second_score`` the runner-up. ``name``
     is set only for an identified speaker or the enrollment target, never
-    for an ``unknown`` turn.
+    for an ``unknown`` turn. ``warning`` (``closer_to_other``) flags an
+    accepted enrollment sample that scores close to or above another
+    profile, named by ``warning_name`` with its ``warning_score``.
     """
     return {
         "status": status,
@@ -238,6 +251,9 @@ def make_result(
         "second_name": second_name,
         "second_score": second_score,
         "reason": reason,
+        "warning": warning,
+        "warning_name": warning_name,
+        "warning_score": warning_score,
         "compute_ms": compute_ms,
         "latency_ms": latency_ms,
     }
@@ -362,12 +378,16 @@ class SpeakerIdService:
         the result); its id is set as ``voice_turn_id`` on the result. With
         recording on, a turn is embedded for the recording even while no
         profile exists (the result stays ``no_profiles``), so the first
-        profile can be built from recordings.
+        profile can be built from recordings. An enrollment turn is never
+        recorded here: with ``config.keep_audio`` its sample is recorded by
+        :meth:`commit_enrollment` (``record`` does not apply to it).
         """
         duration = pcm_duration_s(pcm, sample_rate)
         armed = self.enrollment.current()
         if armed is not None:
-            result, pending = await self._prepare_enrollment(pcm, sample_rate, duration, armed, config)
+            result, pending = await self._prepare_enrollment(
+                pcm, sample_rate, duration, armed, config, conversation_id=conversation_id
+            )
             _set_latency(result, received_at)
             if pending is not None:
                 pending = replace(pending, latency_ms=result["latency_ms"])
@@ -420,6 +440,42 @@ class SpeakerIdService:
         self._recordings[turn_id] = task
         task.add_done_callback(lambda _task, key=turn_id: self._recordings.pop(key, None))
         return turn_id
+
+    def _schedule_enrollment_recording(
+        self, pending: PendingEnrollment, sample_id: int, diagnostics: dict[str, Any]
+    ) -> None:
+        """Record a committed enrollment sample in the background (``enrolled`` turn). Never raises.
+
+        The row links to the new sample (``assigned_*``) only while that
+        sample still exists when the row is written: the session outlier
+        review may delete it first. ``score`` is the cosine to the own
+        centroid before the sample was added, ``margin`` its lead over the
+        closest other profile.
+        """
+        try:
+            turn_id = new_turn_id()
+            recording = TurnRecording(
+                turn_id=turn_id,
+                pcm=pending.pcm,
+                sample_rate=pending.sample_rate,
+                vector=pending.vector,
+                model_id=pending.model_id,
+                status=TURN_STATUS_ENROLLED,
+                conversation_id=pending.conversation_id,
+                duration_s=pending.duration_s,
+                speech_s=pending.speech_s,
+                profile_id=pending.profile_id,
+                score=diagnostics.get("score"),
+                margin=pending.lead,
+                assigned_profile_id=pending.profile_id,
+                assigned_sample_id=sample_id,
+            )
+            task = spawn(_store_if_enabled(recording), name="voice_enrollment_recording")
+        except Exception:
+            logger.warning("Scheduling the enrollment recording failed", exc_info=True)
+            return
+        self._recordings[turn_id] = task
+        task.add_done_callback(lambda _task, key=turn_id: self._recordings.pop(key, None))
 
     def _spawn_follow_up(self, coro: Any, name: str) -> None:
         try:
@@ -577,13 +633,19 @@ class SpeakerIdService:
         duration: float,
         armed: dict[str, Any],
         config: VoiceConfig,
+        *,
+        conversation_id: str | None = None,
     ) -> tuple[dict[str, Any], PendingEnrollment | None]:
         """Embed an enrollment turn and run the sample guard (nothing is stored here).
 
         A sample is rejected when it has too little speech
-        (``rejected_too_short``) or does not fit the profile (see
-        :func:`app.voice.profiles.check_enrollment_sample`). Rejected
-        samples never count toward the requested sample count.
+        (``rejected_too_short``) or does not match the profile's earlier
+        samples (``rejected_inconsistent``, see
+        :func:`app.voice.profiles.check_enrollment_sample`). A sample that
+        sounds like another profile is accepted with a ``closer_to_other``
+        warning. Rejected samples never count toward the requested sample
+        count. With ``config.keep_audio`` the trimmed PCM travels with the
+        pending sample so the commit can record it.
         """
         profile_id = int(armed["profile_id"])
         name = armed.get("name")
@@ -639,6 +701,8 @@ class SpeakerIdService:
         )
         compute_ms = elapsed_ms(started_at)
         diagnostics: dict[str, Any] = {**trimmed, **_score_fields(check.ranked), "score": check.own_score}
+        if check.warning is not None:
+            diagnostics.update(_warning_fields(check))
         if check.reason is not None:
             _log_enrollment_rejection(profile_id, check, trim.speech_s, config)
             result = make_result(
@@ -661,7 +725,13 @@ class SpeakerIdService:
             vad=trim.vad,
             diagnostics=diagnostics,
             enroll_min_similarity=config.enroll_min_similarity,
+            pcm=trim.pcm if config.keep_audio else b"",
+            sample_rate=sample_rate,
+            conversation_id=conversation_id,
+            lead=_lead(check, profile_id),
         )
+        if check.warning is not None:
+            _log_enrollment_warning(profile_id, check, trim.speech_s)
         # Provisional result: the sample is stored only by ``commit_enrollment``.
         result = make_result(
             STATUS_ENROLLED_SAMPLE,
@@ -736,6 +806,13 @@ class SpeakerIdService:
             self.store.record_recent(result)
             return result
         self.centroids.invalidate()
+        if pending.pcm:
+            self._schedule_enrollment_recording(pending, sample_id, diagnostics)
+        warning = diagnostics.get("warning")
+        if isinstance(warning, str):
+            self.enrollment.record_warning(
+                profile_id, warning, diagnostics.get("warning_name"), diagnostics.get("warning_score")
+            )
         remaining = self.enrollment.record_sample(profile_id, sample_id, finish=False)
         logger.info("Stored voice enrollment sample for profile %s (%d remaining)", profile_id, remaining)
         if remaining == 0:
@@ -792,13 +869,46 @@ class SpeakerIdService:
             )
 
 
+def _lead(check: EnrollmentCheck, profile_id: int) -> float | None:
+    """Own score minus the closest other profile's score, or None without both."""
+    others = [item for item in check.ranked if item.profile.profile_id != profile_id]
+    if check.own_score is None or not others:
+        return None
+    return round(check.own_score - others[0].score, 4)
+
+
+def _warning_fields(check: EnrollmentCheck) -> dict[str, Any]:
+    """``warning``, ``warning_name`` and ``warning_score`` of an enrollment check with a warning."""
+    other = check.warning_profile
+    return {
+        "warning": check.warning,
+        "warning_name": other.profile.name if other is not None else None,
+        "warning_score": round(other.score, 4) if other is not None else None,
+    }
+
+
+def _log_enrollment_warning(profile_id: int, check: EnrollmentCheck, speech_s: float) -> None:
+    """Log an accepted enrollment sample that scores close to or above another profile."""
+    other = check.warning_profile
+    logger.info(
+        "Voice enrollment sample for profile %s accepted with warning %s (own=%s best_other=%s "
+        "best_other_profile=%s speech=%.2fs)",
+        profile_id,
+        check.warning,
+        check.own_score,
+        round(other.score, 4) if other is not None else None,
+        other.profile.profile_id if other is not None else None,
+        speech_s,
+    )
+
+
 def _log_enrollment_rejection(profile_id: int, check: EnrollmentCheck, speech_s: float, config: VoiceConfig) -> None:
     """Log a rejected enrollment sample with the scores the guard decided on.
 
     ``own`` is the cosine to the profile's own centroid (None for a first
     sample), ``best_other`` the closest other profile and ``lead`` the gap
-    between both; the guard requires ``lead >= margin / 2`` and, from the
-    third sample on, ``own >= min_similarity``.
+    between both; the guard requires, from the third sample on,
+    ``own >= min_similarity`` (``lead`` only drives the warning).
     """
     others = [item for item in check.ranked if item.profile.profile_id != profile_id]
     best_other = round(others[0].score, 4) if others else None

@@ -2,8 +2,10 @@
 
 While armed, each finished voice turn becomes an enrollment candidate for
 the armed profile instead of being identified. Only accepted samples count;
-rejected ones (too little speech, another speaker, inconsistent voice) are
-counted separately with the last rejection reason for the dashboard.
+rejected ones (too little speech, inconsistent voice) are counted
+separately with the last rejection reason for the dashboard. Accepted
+samples that sound like another profile count normally; they are also
+counted as warnings with the last warning for the dashboard.
 Enrollment disarms itself when the target sample count is reached or it
 expires. When the target is reached, the service may first replace the
 worst sample of this session (an outlier, see
@@ -39,6 +41,8 @@ class _Armed:
     expires_at: str
     rejected: int = 0
     last_rejection: dict[str, Any] | None = None
+    warnings: int = 0
+    last_warning: dict[str, Any] | None = None
     # Ids of the samples stored in this session (the only outlier candidates).
     session_sample_ids: list[int] = field(default_factory=list)
     replaced: int = 0
@@ -102,6 +106,8 @@ class EnrollmentState:
             "collected": armed.collected,
             "rejected": armed.rejected,
             "last_rejection": dict(armed.last_rejection) if armed.last_rejection else None,
+            "warnings": armed.warnings,
+            "last_warning": dict(armed.last_warning) if armed.last_warning else None,
             "replaced": armed.replaced,
             "last_replaced": dict(armed.last_replaced) if armed.last_replaced else None,
             "expires_at": armed.expires_at,
@@ -169,6 +175,21 @@ class EnrollmentState:
             return
         armed.rejected += 1
         armed.last_rejection = {"reason": reason, "at": datetime.now(UTC).isoformat()}
+
+    def record_warning(
+        self, profile_id: int, warning: str, other_name: str | None = None, other_score: float | None = None
+    ) -> None:
+        """Count one accepted sample that carried a warning (e.g. ``closer_to_other``)."""
+        armed = self._active(profile_id)
+        if armed is None:
+            return
+        armed.warnings += 1
+        armed.last_warning = {
+            "warning": warning,
+            "name": other_name,
+            "score": other_score,
+            "at": datetime.now(UTC).isoformat(),
+        }
 
     def rename(self, profile_id: int, name: str) -> None:
         """Update the label of the armed enrollment after a profile rename."""

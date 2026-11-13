@@ -4,6 +4,26 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-13 — voice: enrollment never rejects for another speaker; record enrollment audio
+
+- **An armed enrollment or an admin assignment accepts a sample that sounds
+  like another profile and flags it (`closer_to_other`) instead of rejecting
+  it.** Supersedes the other-speaker part of the 2026-10-13 entry. Rationale:
+  the rejection made enrollment order-dependent. Live 2026-11-13: Laura
+  enrolled first, 7 of Patric's 18 attempts were rejected (Laura 0.69-0.89),
+  his profile kept atypical samples and his normal speech was identified as
+  Laura. The admin declares the speaker; a wrong sample is visible in the
+  sample list and can be deleted. `rejected_too_short`,
+  `rejected_inconsistent` and the session outlier review stay.
+- **With `keep_audio`, committed enrollment samples are recorded as
+  `enrolled` voice turns.** Rationale: embeddings are model-specific; only
+  audio lets alternative speaker models be benchmarked on clean, labeled
+  data (and later re-embed profiles after a model switch).
+- **Model switch is now on the table.** Same-speaker CAM++ cosine on the Echo
+  Show 5 ranged 0.21-0.87 (cross-speaker 0.52-0.66), so input and enrollment
+  fixes alone will not separate the two speakers; the choice waits for the
+  offline benchmark on recorded enrollment audio.
+
 ## 2026-11-12 — Wake word stripped at the conversation boundary
 
 - **A leading wake word is removed from HA conversation text before the

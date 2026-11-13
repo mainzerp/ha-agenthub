@@ -23,9 +23,10 @@ from app.voice.enrollment import MAX_OUTLIER_REPLACEMENTS
 from app.voice.profiles import (
     MIN_SAMPLES_FOR_OUTLIER_REVIEW,
     REJECTED_INCONSISTENT,
-    REJECTED_OTHER_SPEAKER,
+    WARNING_CLOSER_TO_OTHER,
     ProfileCentroid,
     build_centroids,
+    centroid_overlap,
     check_enrollment_sample,
     find_session_outlier,
     l2_normalize,
@@ -307,7 +308,8 @@ class TestCheckEnrollmentSample:
         assert check.reason is None and check.own_score > 0.9
         assert [item.profile.name for item in check.ranked] == ["Anna", "Ben"]
 
-    def test_other_speaker_rejected(self):
+    def test_other_speaker_accepted_with_warning(self):
+        # The speaker is declared by the enrollment: never rejected, only flagged.
         check = check_enrollment_sample(
             np.array([0.3, 1.0, 0.0]),
             1,
@@ -316,7 +318,31 @@ class TestCheckEnrollmentSample:
             margin=0.12,
             min_similarity=0.1,
         )
-        assert check.reason == REJECTED_OTHER_SPEAKER
+        assert check.reason is None and check.warning == WARNING_CLOSER_TO_OTHER
+        assert check.warning_profile is not None and check.warning_profile.profile.name == "Ben"
+        assert check.warning_profile.score > check.own_score
+
+    def test_consistent_sample_has_no_warning(self):
+        check = check_enrollment_sample(
+            np.array([1.0, 0.1, 0.0]),
+            1,
+            [_centroid(1, "Anna", 1, 0, 0), _centroid(2, "Ben", 0, 1, 0)],
+            threshold=0.55,
+            margin=0.12,
+            min_similarity=0.45,
+        )
+        assert check.warning is None and check.warning_profile is None
+
+    def test_inconsistent_sample_close_to_other_is_still_rejected(self):
+        check = check_enrollment_sample(
+            np.array([0.1, 1.0, 0.0]),
+            1,
+            [_centroid(1, "Anna", 1, 0, 0, samples=3), _centroid(2, "Ben", 0, 1, 0)],
+            threshold=0.55,
+            margin=0.12,
+            min_similarity=0.45,
+        )
+        assert check.reason == REJECTED_INCONSISTENT and check.warning == WARNING_CLOSER_TO_OTHER
 
     def test_inconsistent_rejected_from_the_third_sample_on(self):
         check = check_enrollment_sample(
@@ -341,7 +367,7 @@ class TestCheckEnrollmentSample:
         )
         assert check.reason is None and check.own_score < 0.45
 
-    def test_other_speaker_rule_applies_to_the_second_sample(self):
+    def test_other_speaker_warning_applies_to_the_second_sample(self):
         check = check_enrollment_sample(
             np.array([0.3, 1.0, 0.0]),
             1,
@@ -350,7 +376,7 @@ class TestCheckEnrollmentSample:
             margin=0.12,
             min_similarity=0.45,
         )
-        assert check.reason == REJECTED_OTHER_SPEAKER
+        assert check.reason is None and check.warning == WARNING_CLOSER_TO_OTHER
 
     def test_build_centroids_counts_samples(self):
         rows = [
@@ -361,17 +387,26 @@ class TestCheckEnrollmentSample:
         counts = {c.profile_id: c.sample_count for c in build_centroids(rows)}
         assert counts == {1: 2, 2: 1}
 
-    def test_first_sample_rejected_when_identified_as_someone_else(self):
+    def test_first_sample_warned_when_identified_as_someone_else(self):
         centroids = [_centroid(2, "Ben", 0, 1, 0), _centroid(3, "Cleo", 0, 0, 1)]
-        rejected = check_enrollment_sample(
+        warned = check_enrollment_sample(
             np.array([0.1, 1.0, 0.0]), 1, centroids, threshold=0.55, margin=0.12, min_similarity=0.45
         )
-        assert rejected.reason == REJECTED_OTHER_SPEAKER and rejected.own_score is None
-        # Close to Ben but ambiguous with Cleo (margin rule): accepted as a new voice.
-        accepted = check_enrollment_sample(
+        assert warned.reason is None and warned.own_score is None
+        assert warned.warning == WARNING_CLOSER_TO_OTHER and warned.warning_profile.profile.name == "Ben"
+        # Close to Ben but ambiguous with Cleo (margin rule): a new voice, no warning.
+        plain = check_enrollment_sample(
             np.array([0.0, 1.0, 0.95]), 1, centroids, threshold=0.55, margin=0.12, min_similarity=0.45
         )
-        assert accepted.reason is None
+        assert plain.reason is None and plain.warning is None
+
+    def test_centroid_overlap(self):
+        centroids = [_centroid(1, "Anna", 1, 0, 0), _centroid(2, "Ben", 1, 1, 0), _centroid(3, "Cleo", 0, 0, 1)]
+        overlap = centroid_overlap(1, centroids)
+        assert [item["name"] for item in overlap] == ["Ben", "Cleo"]
+        assert overlap[0]["profile_id"] == 2 and overlap[0]["score"] == pytest.approx(0.7071, abs=1e-4)
+        assert overlap[1]["score"] == pytest.approx(0.0, abs=1e-6)
+        assert centroid_overlap(4, centroids) == []
 
     def test_first_sample_without_other_profiles_accepted(self):
         check = check_enrollment_sample(np.array([1.0, 0.0]), 1, [], threshold=0.55, margin=0.12, min_similarity=0.45)
@@ -386,19 +421,15 @@ class TestEnrollmentGuardService:
         await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0, 0), 3, _MODEL, 2.0, 1.8)
         await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0.05, 0), 3, _MODEL, 2.0, 1.8)
         await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0, 1.8)
-        engine = FakeEngine([_unit(0.2, 1, 0), _unit(0.3, 0, 1), _unit(1, 0.1, 0)])
+        engine = FakeEngine([_unit(0.3, 0, 1), _unit(1, 0.1, 0)])
         service = SpeakerIdService(engine=engine, vad=FakeVad(2.0))
         service.enrollment.arm(anna["id"], "Anna", samples=1, timeout_s=60)
 
-        other = await service.process_turn(_pcm(2.5), _RATE, _config())
-        assert other["status"] == "rejected_sample" and other["reason"] == "rejected_other_speaker"
-        assert other["name"] == "Anna" and other["scores"][0]["name"] == "Ben"
-        assert service.enrollment.current()["remaining"] == 1
-
         inconsistent = await service.process_turn(_pcm(2.5), _RATE, _config())
         assert inconsistent["status"] == "rejected_sample" and inconsistent["reason"] == "rejected_inconsistent"
+        assert inconsistent["name"] == "Anna"
         armed = service.enrollment.current()
-        assert armed["remaining"] == 1 and armed["rejected"] == 2
+        assert armed["remaining"] == 1 and armed["rejected"] == 1
         assert armed["last_rejection"]["reason"] == "rejected_inconsistent"
         assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 2
 
@@ -410,8 +441,37 @@ class TestEnrollmentGuardService:
         assert len(rows) == 3 and rows[-1]["speech_s"] == pytest.approx(2.0)
 
         recent = service.store.recent()
-        assert [r["status"] for r in recent] == ["enrolled_sample", "rejected_sample", "rejected_sample"]
+        assert [r["status"] for r in recent] == ["enrolled_sample", "rejected_sample"]
         assert recent[1]["reason"] == "rejected_inconsistent"
+
+    async def test_other_speaker_sample_accepted_with_warning(self, db_repository):
+        """Armed enrollment declares the speaker: a sample closer to another profile is stored and flagged."""
+        anna = await VoiceProfileRepository.create_profile("Anna")
+        ben = await VoiceProfileRepository.create_profile("Ben")
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0, 0), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0.05, 0), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0, 1.8)
+        # Higher against Ben (0.98) than against Anna (~0.22, still above min_similarity 0.2).
+        engine = FakeEngine([_unit(0.2, 1, 0), _unit(0.55, 0.835, 0)])
+        service = SpeakerIdService(engine=engine, vad=FakeVad(2.0))
+        service.enrollment.arm(anna["id"], "Anna", samples=3, timeout_s=60)
+
+        other = await service.process_turn(_pcm(2.5), _RATE, _config(enroll_min_similarity=0.2))
+        assert other["status"] == "enrolled_sample" and other["reason"] is None
+        assert other["warning"] == "closer_to_other" and other["warning_name"] == "Ben"
+        assert other["warning_score"] == pytest.approx(0.9806, abs=1e-3)
+        assert other["name"] == "Anna" and other["scores"][0]["name"] == "Ben"
+
+        # Near-tie against the updated centroid (lead ~0.02 below margin / 2): accepted with the same warning.
+        near_tie = await service.process_turn(_pcm(2.5), _RATE, _config(enroll_min_similarity=0.2))
+        assert near_tie["status"] == "enrolled_sample" and near_tie["warning"] == "closer_to_other"
+
+        armed = service.enrollment.current()
+        assert armed["remaining"] == 1 and armed["rejected"] == 0 and armed["warnings"] == 2
+        assert armed["last_warning"]["warning"] == "closer_to_other" and armed["last_warning"]["name"] == "Ben"
+        assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 4
+        recent = service.store.recent()
+        assert recent[0]["warning"] == "closer_to_other" and recent[0]["warning_name"] == "Ben"
 
     async def test_consistency_rule_waits_for_two_accepted_samples(self, db_repository):
         """A poor first sample must not block the session: the 2nd sample is never ``rejected_inconsistent``."""
@@ -436,18 +496,17 @@ class TestEnrollmentGuardService:
         assert service.enrollment.current() is None
         assert await VoiceProfileRepository.count_samples(anna["id"], _MODEL) == 3
 
-    async def test_first_sample_of_new_profile_identified_as_other_is_rejected(self, db_repository):
+    async def test_first_sample_of_new_profile_identified_as_other_is_accepted_with_warning(self, db_repository):
         ben = await VoiceProfileRepository.create_profile("Ben")
         cleo = await VoiceProfileRepository.create_profile("Cleo")
         await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0)
         laura = await VoiceProfileRepository.create_profile("Laura")
-        service = SpeakerIdService(engine=FakeEngine([_unit(0.1, 1, 0), _unit(1, 0, 0)]), vad=FakeVad(2.0))
+        service = SpeakerIdService(engine=FakeEngine([_unit(0.1, 1, 0)]), vad=FakeVad(2.0))
         service.enrollment.arm(laura["id"], "Laura", samples=1, timeout_s=60)
 
-        rejected = await service.process_turn(_pcm(2.5), _RATE, _config())
-        assert rejected["reason"] == "rejected_other_speaker"
         accepted = await service.process_turn(_pcm(2.5), _RATE, _config())
         assert accepted["status"] == "enrolled_sample" and accepted["score"] is None
+        assert accepted["warning"] == "closer_to_other" and accepted["warning_name"] == "Ben"
         assert await VoiceProfileRepository.count_samples(laura["id"], _MODEL) == 1
         assert await VoiceProfileRepository.count_samples(cleo["id"], _MODEL) == 0
 
@@ -978,19 +1037,20 @@ class TestDeferredRejection:
         anna = await VoiceProfileRepository.create_profile("Anna")
         ben = await VoiceProfileRepository.create_profile("Ben")
         await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0, 0), 3, _MODEL, 2.0, 1.8)
+        await VoiceProfileRepository.add_sample(anna["id"], _vec(1, 0.05, 0), 3, _MODEL, 2.0, 1.8)
         await VoiceProfileRepository.add_sample(ben["id"], _vec(0, 1, 0), 3, _MODEL, 2.0, 1.8)
-        service = SpeakerIdService(engine=FakeEngine([_unit(0.2, 1, 0)]), vad=FakeVad(2.0))
+        service = SpeakerIdService(engine=FakeEngine([_unit(0.3, 0, 1)]), vad=FakeVad(2.0))
         service.enrollment.arm(anna["id"], "Anna", samples=2, timeout_s=60)
         analysis = await service.analyze_turn(_pcm(2.5), _RATE, _config())
         assert analysis.pending is None and analysis.rejection is not None
-        assert analysis.result["reason"] == "rejected_other_speaker"
+        assert analysis.result["reason"] == "rejected_inconsistent"
         assert service.store.recent() == []
         assert service.enrollment.current()["rejected"] == 0
 
         service.commit_rejection(analysis.rejection)
         assert [r["status"] for r in service.store.recent()] == ["rejected_sample"]
         armed = service.enrollment.current()
-        assert armed["rejected"] == 1 and armed["last_rejection"]["reason"] == "rejected_other_speaker"
+        assert armed["rejected"] == 1 and armed["last_rejection"]["reason"] == "rejected_inconsistent"
         assert armed["remaining"] == 2
 
 
@@ -1051,13 +1111,15 @@ class TestNearTieGuard:
             min_similarity=0.45,
         )
 
-    def test_near_tie_rejected(self):
+    def test_near_tie_accepted_with_warning(self):
         # Own 0.60 vs Ben 0.56: a lead of 0.04 is below half the default margin (0.06).
-        assert self._check(0.12).reason == REJECTED_OTHER_SPEAKER
+        check = self._check(0.12)
+        assert check.reason is None and check.warning == WARNING_CLOSER_TO_OTHER
 
-    def test_clear_lead_accepted(self):
+    def test_clear_lead_has_no_warning(self):
         # Half of margin 0.05 is 0.025: a lead of 0.04 is enough.
-        assert self._check(0.05).reason is None
+        check = self._check(0.05)
+        assert check.reason is None and check.warning is None
 
 
 class TestTrimmerRobustness:

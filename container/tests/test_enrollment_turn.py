@@ -126,7 +126,7 @@ def _voice_turn(svc: SpeakerIdService, conversation_id: str, result: dict | None
 
 _ACCEPTED = make_result("enrolled_sample", duration_s=3.0, profile_id=7, name="Anna", score=0.8, compute_ms=20.0)
 _REJECTED = make_result(
-    "rejected_sample", duration_s=3.0, profile_id=7, name="Anna", reason="rejected_other_speaker", compute_ms=20.0
+    "rejected_sample", duration_s=3.0, profile_id=7, name="Anna", reason="rejected_inconsistent", compute_ms=20.0
 )
 
 
@@ -461,7 +461,7 @@ class TestStreamingPath:
 
 
 # ---------------------------------------------------------------------------
-# Rejection log carries the guard scores
+# Rejection and warning logs carry the guard scores
 # ---------------------------------------------------------------------------
 
 
@@ -474,10 +474,15 @@ class _FakeEngine:
 
 
 class _FakeCentroids:
+    def __init__(self, ben_samples: int = 1) -> None:
+        self.ben_samples = ben_samples
+
     async def get(self, model: str) -> list[ProfileCentroid]:
         return [
             ProfileCentroid(1, "Anna", None, l2_normalize(np.array([1, 0, 0], dtype=np.float32))),
-            ProfileCentroid(2, "Ben", None, l2_normalize(np.array([0, 1, 0], dtype=np.float32))),
+            ProfileCentroid(
+                2, "Ben", None, l2_normalize(np.array([0, 1, 0], dtype=np.float32)), sample_count=self.ben_samples
+            ),
         ]
 
     def invalidate(self) -> None:
@@ -485,12 +490,26 @@ class _FakeCentroids:
 
 
 async def test_rejection_log_includes_guard_scores(caplog):
-    svc = SpeakerIdService(engine=_FakeEngine(), centroids=_FakeCentroids())
+    # Ben has two samples: Anna's voice fails his consistency rule.
+    svc = SpeakerIdService(engine=_FakeEngine(), centroids=_FakeCentroids(ben_samples=2))
     svc.enrollment.arm(2, "Ben", samples=3, timeout_s=60)
     with caplog.at_level(logging.INFO, logger="app.voice.service"):
         analysis = await svc.analyze_turn(b"\x10\x00" * 16000 * 3, 16000, _ws_config())
     assert analysis.rejection is not None
     line = next(r.getMessage() for r in caplog.records if "Rejected voice enrollment sample" in r.getMessage())
-    assert "rejected_other_speaker" in line
+    assert "rejected_inconsistent" in line
     for field in ("own=", "best_other=", "best_other_profile=1", "lead=", "speech=", "threshold=0.55", "margin=0.05"):
+        assert field in line
+
+
+async def test_warning_log_names_the_closer_profile(caplog):
+    # Ben has one sample: Anna's voice is accepted for him, flagged ``closer_to_other``.
+    svc = SpeakerIdService(engine=_FakeEngine(), centroids=_FakeCentroids())
+    svc.enrollment.arm(2, "Ben", samples=3, timeout_s=60)
+    with caplog.at_level(logging.INFO, logger="app.voice.service"):
+        analysis = await svc.analyze_turn(b"\x10\x00" * 16000 * 3, 16000, _ws_config())
+    assert analysis.pending is not None and analysis.rejection is None
+    assert analysis.result["warning"] == "closer_to_other" and analysis.result["warning_name"] == "Anna"
+    line = next(r.getMessage() for r in caplog.records if "accepted with warning" in r.getMessage())
+    for field in ("closer_to_other", "own=", "best_other=", "best_other_profile=1", "speech="):
         assert field in line

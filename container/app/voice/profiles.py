@@ -136,9 +136,14 @@ def match_embedding(
 
 
 # Enrollment-sample rejection reasons (see :func:`check_enrollment_sample`).
-REJECTED_OTHER_SPEAKER = "rejected_other_speaker"
 REJECTED_INCONSISTENT = "rejected_inconsistent"
 REJECTED_TOO_SHORT = "rejected_too_short"
+
+# Enrollment-sample warning: the sample is stored, but it scores closer to
+# another profile (or nearly as close) than to its own. Enrollment is an
+# explicit declaration of who is speaking, so the guard never rejects for
+# this; the warning only flags the sample for review.
+WARNING_CLOSER_TO_OTHER = "closer_to_other"
 
 # Accepted samples a profile needs before ``rejected_inconsistent`` applies.
 MIN_SAMPLES_FOR_CONSISTENCY = 2
@@ -146,11 +151,18 @@ MIN_SAMPLES_FOR_CONSISTENCY = 2
 
 @dataclass(frozen=True)
 class EnrollmentCheck:
-    """Outcome of :func:`check_enrollment_sample`; ``reason`` is None when the sample is accepted."""
+    """Outcome of :func:`check_enrollment_sample`.
+
+    ``reason`` is None when the sample is accepted. ``warning`` (only ever
+    :data:`WARNING_CLOSER_TO_OTHER`) and ``warning_profile`` (the closest
+    other profile with its score) may be set on an accepted sample too.
+    """
 
     reason: str | None
     own_score: float | None
     ranked: tuple[ProfileScore, ...]
+    warning: str | None = None
+    warning_profile: ProfileScore | None = None
 
 
 def check_enrollment_sample(
@@ -164,12 +176,15 @@ def check_enrollment_sample(
 ) -> EnrollmentCheck:
     """Decide whether an enrollment sample belongs to ``profile_id``.
 
-    With existing samples (the profile has a centroid): reject when the
-    sample does not lead the closest other profile by at least half the
-    identification ``margin`` -- which includes scoring higher against
-    another profile (``rejected_other_speaker``). First sample: reject when
-    it would be identified as another profile under the normal threshold
-    and margin rule (``rejected_other_speaker``).
+    The caller declared the speaker (armed enrollment or an admin
+    assignment), so a sample is never rejected for sounding like another
+    profile: that only sets ``warning`` (``closer_to_other``) with the
+    closest other profile. With existing samples (the profile has a
+    centroid) the warning is set when the sample does not lead the closest
+    other profile by at least half the identification ``margin`` -- which
+    includes scoring higher against another profile. For a first sample it
+    is set when the sample would be identified as another profile under the
+    normal threshold and margin rule.
 
     The own-consistency rule (``rejected_inconsistent``: cosine to the own
     centroid below ``min_similarity``) applies only once the profile has at
@@ -181,20 +196,49 @@ def check_enrollment_sample(
     ranked = tuple(score_profiles(embedding, centroids))
     own = next((item for item in ranked if item.profile.profile_id == profile_id), None)
     others = [item for item in ranked if item.profile.profile_id != profile_id]
-    reason: str | None = None
-    if own is None:
-        if others:
-            best = others[0].score
+    closest_other = others[0] if others else None
+    warning: str | None = None
+    if closest_other is not None:
+        if own is None:
             second = others[1].score if len(others) > 1 else 0.0
-            if best >= threshold and best - second >= margin:
-                reason = REJECTED_OTHER_SPEAKER
-    elif others and (others[0].score > own.score or own.score - others[0].score < margin * 0.5):
-        # A near-tie sample would pull the two centroids together.
-        reason = REJECTED_OTHER_SPEAKER
-    elif own.profile.sample_count >= MIN_SAMPLES_FOR_CONSISTENCY and own.score < min_similarity:
+            if closest_other.score >= threshold and closest_other.score - second >= margin:
+                warning = WARNING_CLOSER_TO_OTHER
+        elif closest_other.score > own.score or own.score - closest_other.score < margin * 0.5:
+            warning = WARNING_CLOSER_TO_OTHER
+    reason: str | None = None
+    if own is not None and own.profile.sample_count >= MIN_SAMPLES_FOR_CONSISTENCY and own.score < min_similarity:
         reason = REJECTED_INCONSISTENT
     own_score = round(own.score, 4) if own is not None else None
-    return EnrollmentCheck(reason=reason, own_score=own_score, ranked=ranked)
+    return EnrollmentCheck(
+        reason=reason,
+        own_score=own_score,
+        ranked=ranked,
+        warning=warning,
+        warning_profile=closest_other if warning is not None else None,
+    )
+
+
+def centroid_overlap(profile_id: int, centroids: list[ProfileCentroid]) -> list[dict[str, Any]]:
+    """Cosine between ``profile_id``'s centroid and every other comparable centroid, highest first.
+
+    A high value means the two profiles sound alike to the model (or one of
+    them holds samples of the other speaker). Empty when the profile has no
+    centroid.
+    """
+    own = next((item for item in centroids if item.profile_id == profile_id), None)
+    if own is None:
+        return []
+    overlap = [
+        {
+            "profile_id": item.profile_id,
+            "name": item.name,
+            "score": round(float(np.dot(own.centroid, item.centroid)), 4),
+        }
+        for item in centroids
+        if item.profile_id != profile_id and item.centroid.shape == own.centroid.shape
+    ]
+    overlap.sort(key=lambda item: item["score"], reverse=True)
+    return overlap
 
 
 def sample_diagnostics(

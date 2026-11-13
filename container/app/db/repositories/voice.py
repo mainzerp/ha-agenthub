@@ -284,15 +284,31 @@ class VoiceTurnRepository:
         score: float | None = None,
         margin: float | None = None,
         created_at: str | None = None,
+        assigned_profile_id: int | None = None,
+        assigned_sample_id: int | None = None,
     ) -> None:
+        """Insert one recorded turn.
+
+        ``assigned_profile_id``/``assigned_sample_id`` link the turn to an
+        enrollment sample made from it (a recorded enrollment sample); the
+        link is written only when that sample still exists at insert time,
+        in the same statement, so a sample deleted meanwhile never leaves a
+        dangling link.
+        """
+        created = created_at or _now()
+        link = (assigned_sample_id, assigned_profile_id)
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO voice_turns (id, created_at, conversation_id, duration_s, speech_s, embedding, dim, "
-                "model, status, speaker_profile_id, score, margin, audio_path) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "model, status, speaker_profile_id, score, margin, audio_path, assigned_profile_id, "
+                "assigned_sample_id, assigned_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "(SELECT profile_id FROM voice_samples WHERE id = ? AND profile_id = ?), "
+                "(SELECT id FROM voice_samples WHERE id = ? AND profile_id = ?), "
+                "CASE WHEN EXISTS (SELECT 1 FROM voice_samples WHERE id = ? AND profile_id = ?) THEN ? END)",
                 (
                     turn_id,
-                    created_at or _now(),
+                    created,
                     conversation_id,
                     duration_s,
                     speech_s,
@@ -304,6 +320,10 @@ class VoiceTurnRepository:
                     score,
                     margin,
                     audio_path,
+                    *link,
+                    *link,
+                    *link,
+                    created,
                 ),
             )
 

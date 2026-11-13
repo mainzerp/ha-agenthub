@@ -168,6 +168,9 @@ class SpeakerTurnStore:
                 "speech_s": result.get("speech_s"),
                 "vad": result.get("vad"),
                 "reason": result.get("reason"),
+                "warning": result.get("warning"),
+                "warning_name": result.get("warning_name"),
+                "warning_score": result.get("warning_score"),
                 "compute_ms": result.get("compute_ms"),
                 "latency_ms": result.get("latency_ms"),
             }
