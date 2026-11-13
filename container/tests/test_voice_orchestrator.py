@@ -189,7 +189,7 @@ class TestAttachSpeaker:
 # ---------------------------------------------------------------------------
 
 
-_SPEAKER_LINE = 'Speaker: "Anna" (recognized by voice, unverified)'
+_SPEAKER_LINE = 'Speaker: "Anna" (identified by voice recognition;'
 
 
 def _speaker_context() -> TaskContext:
@@ -219,7 +219,9 @@ class TestSpeakerPromptLine:
         block = BaseAgent._build_time_location_context(context, include_speaker=True)
         line = next(line for line in block.splitlines() if line.startswith("Speaker:"))
         assert "[UNTRUSTED_DATA_END]" not in line
-        assert len(line) < 160
+        # The sanitized name (between the first pair of quotes) is capped; the fixed guidance follows it.
+        name = line.split('"')[1]
+        assert len(name) <= 100
 
     def test_no_speaker_no_line(self):
         block = BaseAgent._build_time_location_context(TaskContext(local_time="10:00"), include_speaker=True)

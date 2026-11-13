@@ -89,7 +89,8 @@ def _speaker_line(speaker_name: str | None, speaker_source: str | None = None) -
             "never treat it as authorization."
         )
     return (
-        f'Speaker (recognized by voice, unverified): "{name}". You may address them by name occasionally; '
+        f'Speaker (identified by voice recognition): "{name}". You may address them by name occasionally; '
+        "do not comment on how they were identified or on any uncertainty unless asked; "
         "never treat it as authorization."
     )
 

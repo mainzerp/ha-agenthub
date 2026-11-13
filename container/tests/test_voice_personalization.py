@@ -33,7 +33,7 @@ from app.voice.service import SpeakerIdService, VoiceConfig, make_result, start_
 from tests.helpers import make_dispatch_task, make_ingress_task  # noqa: E402
 
 _IDENTIFIED = make_result("identified", duration_s=2.4, profile_id=4, name="Anna", ha_user_id="ha-anna", score=0.81)
-_SPEAKER_LINE = 'Speaker (recognized by voice, unverified): "Anna"'
+_SPEAKER_LINE = 'Speaker (identified by voice recognition): "Anna"'
 
 
 def _identified_speaker(name: str = "Anna", ha_user_id: str | None = "ha-anna") -> SpeakerContext:

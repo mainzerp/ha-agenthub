@@ -60,9 +60,9 @@ _STATES = [
 ]
 
 _USER_LINE = 'User: "Patric" (the Home Assistant user making this request)'
-_SPEAKER_LINE = 'Speaker: "Anna" (recognized by voice, unverified)'
+_SPEAKER_LINE = 'Speaker: "Anna" (identified by voice recognition;'
 _MEDIATION_USER_LINE = 'User (Home Assistant account): "Patric"'
-_MEDIATION_SPEAKER_LINE = 'Speaker (recognized by voice, unverified): "Anna"'
+_MEDIATION_SPEAKER_LINE = 'Speaker (identified by voice recognition): "Anna"'
 
 
 def _ha_client(states=None) -> AsyncMock:

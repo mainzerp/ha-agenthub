@@ -615,8 +615,10 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    Only `identified` attaches `TaskContext.speaker` (for every agent);
    only agents that opt in with `_receives_speaker_context = True`
    (`GeneralAgent`, `TimerAgent`) get the prompt line
-   `Speaker: "<name>" (recognized by voice, unverified)` (name sanitized
-   as untrusted text), or `User: "<name>" (the Home Assistant user making
+   `Speaker: "<name>" (identified by voice recognition; ...)` (name sanitized
+   as untrusted text; it tells the agent to use the name naturally, not to
+   mention voice recognition or any uncertainty unless asked how it knows,
+   and never to treat it as authorization), or `User: "<name>" (the Home Assistant user making
    this request)` when the request's HA user resolved to a person (see
    Requesting person below). Device/domain agents (security included),
    lists, calendar and custom/plugin agents never see either line. Every consumed entry records a

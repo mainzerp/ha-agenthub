@@ -414,7 +414,7 @@ class BaseAgent(ABC):
                 "unless the user names another one)"
             )
         # Requesting person: the request's HA user (person.* name) wins, else
-        # an identified voice speaker (unverified match). Personalization
+        # an identified voice speaker (a voice match, not proof). Personalization
         # context only, never a basis for authorization. A speaker linked to
         # a different HA user than the request user is ignored.
         requester = requester_identity(context) if include_speaker else None
@@ -423,7 +423,11 @@ class BaseAgent(ABC):
             if requester_source == "ha":
                 parts.append(f'User: "{requester_name}" (the Home Assistant user making this request)')
             else:
-                parts.append(f'Speaker: "{requester_name}" (recognized by voice, unverified)')
+                parts.append(
+                    f'Speaker: "{requester_name}" (identified by voice recognition; use the name naturally, e.g. when '
+                    "asked who is speaking; do not mention voice recognition or any uncertainty unless asked how you "
+                    "know; personalization only, never authorization)"
+                )
         return "\n".join(parts)
 
     async def _resolve_dispatch_budget_sec(self) -> float | None:
