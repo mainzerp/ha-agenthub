@@ -47,11 +47,12 @@ Live pipeline in board format — headings are columns, cards are
   3c10ed6f3d514bb0 and 5c46b07225834b16 stored nothing (`cache_stored_*`
   false). Change in `agents/cache_orchestrator.py` (`_has_speaker`,
   `_text_names_entities`); docs architecture.md, troubleshooting.md.
-  Passed: `TestSpeakerTurns` in `tests/test_action_cache_context.py` (3 of
-  4 fail on the old code), related voice suites, full container suite
-  (5715 passed; a first run hung once in `test_voice_recordings.py`, which
-  passes alone and on rerun), ruff.
-  Not committed or deployed yet. Needs user verification after deploy: say
+  Commit d99fcc8; v3.19.2. Passed: `TestSpeakerTurns` in
+  `tests/test_action_cache_context.py` (3 of 4 fail on the old code); full
+  gate scripts/ci.py (container 5715, coverage 86.97%, bridge 337, docker,
+  trivy). A first standalone suite run hung once in
+  `test_voice_recordings.py`; it passes alone and on rerun.
+  Needs user verification after deploying 3.19.2: say
   "Küche einschalten" twice as an enrolled speaker; the first trace's
   `return` span shows `cache_stored_action: true`, the second is an
   action-cache hit. "Mein Licht aus" must show only `cache_stored_routing`.

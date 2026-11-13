@@ -1,12 +1,21 @@
 # Version
 
-**Current Version:** 3.19.1
+**Current Version:** 3.19.2
 
 ## Recent Changes
 
-(tracking changes since 3.19.1)
+(tracking changes since 3.19.2)
 
 ## Version History
+
+### 3.19.2 (PATCH) -- voice turns of a recognized speaker are cached again
+
+(commit d99fcc8)
+
+- Fix (cache): a turn with a voice-identified speaker counted as context-dependent and stored neither an action nor a routing row, so with speaker identification on, voice commands such as "Küche einschalten" never filled the cache. Such turns now always store the routing row and store the action row when the turn text names every executed entity (friendly name, alias or device name, as for anaphora referents). "Mein Licht aus" stores only the routing row, because the speaker's memory may have picked the entity. Answers to a clarifying question stay uncached; agents that see the speaker's name (general, timer) still write no action row; replay speech is still the unmediated agent speech, never the speaker's name.
+- Docs: cache-section drift fixed in architecture and troubleshooting (routing hygiene rule, sensitive replay deletes the row, area-name-only turns, entity-index note).
+- Upgrade: no migration.
+- Verification: 4 new cache tests (3 fail on the old code); full gate `scripts/ci.py` (Ruff, self-docs and card sync, lock check, container suite 5715 passed with coverage 86.97%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test, trivy). Not verified: cache rows from real speaker turns on the live instance.
 
 ### 3.19.1 (PATCH) -- no spoken doubt about the recognized speaker
 
