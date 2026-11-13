@@ -52,8 +52,17 @@ Live pipeline in board format — headings are columns, cards are
   list shows profile overlap. Passed: ruff; voice tests 388 passed; full
   container suite 5690 passed, 4 skipped. Offline benchmark harness with 11
   sherpa-onnx models ready (session scratchpad), smoke run only.
-  Next: commit + test image (needs user OK), re-enroll, run benchmark on
-  the `enrolled` recordings, pick model, threshold and margin.
+  Commit 6998a11 on branch `fix/voice-enrollment-order` (not pushed);
+  test image `ghcr.io/mainzerp/ha-agenthub:test-voice-enroll` pushed
+  (sha256:50eeac8a...), smoke import OK.
+  Deployed; re-enrolled (Patric then Laura, Echo Show 5): CAM++ profile
+  overlap 0.84. Benchmark on 33 `enrolled` recordings + 4 labeled turns:
+  production CAM++ en-voxceleb pair EER 0.42 (worst of 11); ERes2Net
+  en-voxceleb, TitaNet large, CAM++ zh_en advanced, ERes2NetV2 EER 0.000.
+  ERes2Net: overlap 0.19, test Patric 0.61-0.81 vs Laura 0.01-0.14, Laura
+  0.55 vs 0.20, 13 ms per audio second.
+  Next: user picks the model; switch model (image + defaults), re-embed
+  profiles from `enrolled` recordings, verify on other satellites.
   Verify: deploy test image, both re-enroll 10 sentences on the Echo Show 5,
   enrollment turns appear with audio on `/dashboard/voice-profiles`.
 

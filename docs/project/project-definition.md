@@ -102,7 +102,7 @@ Current runtime notes:
 | LLM integration | litellm | Provider abstraction for local and hosted LLMs |
 | Local embeddings | `intfloat/multilingual-e5-base` | Seeded default local embedding model |
 | Vector storage | sqlite-vec (SQLite) | Entity index (`entity_vectors.db`), routing cache semantic tier (`cache.db`), and session memory embeddings (`session_memory.db`); routing and action caches moved to SQLite in v1.37.0 |
-| Speaker identification | sherpa-onnx (CAM++ speaker embeddings, CPU) | Optional, disabled by default; model baked into the image |
+| Speaker identification | sherpa-onnx (ERes2Net speaker embeddings, CPU) | Optional, disabled by default; model baked into the image |
 | Structured data | SQLite + aiosqlite | Settings, secrets, traces, analytics, users, history, custom agents |
 | Agent protocol | A2A over JSON-RPC 2.0 envelopes | Current transport is in-process |
 | Entity matching | Keyword recall, rapidfuzz, pyphonetics, optional LLM expansion | Agent-side keyword recall plus closed-list LLM pick; deterministic stages then hybrid matcher for free-form entity text |

@@ -40,6 +40,7 @@ from app.voice.recordings import (
     new_turn_id,
     store_recording,
 )
+from app.voice.reembed import RecordingReembedder, ReembedRun, ReembedTrigger
 from app.voice.speaker_engine import SpeakerEngine, SpeakerEngineUnavailableError
 from app.voice.turn_store import SpeakerLookup, SpeakerTurnStore
 from app.voice.vad import SpeechTrim, VoiceActivityTrimmer
@@ -300,9 +301,19 @@ class SpeakerIdService:
         # In-flight voice-turn recordings by turn id, and trace-link tasks.
         self._recordings: dict[str, asyncio.Task[Any]] = {}
         self._links: set[asyncio.Task[Any]] = set()
+        # Re-embeds recorded enrollment samples after a speaker-model change.
+        self.reembedder = RecordingReembedder(self.engine, self.centroids)
 
     def invalidate_profiles(self) -> None:
         self.centroids.invalidate()
+
+    async def reembed_recordings(self, trigger: ReembedTrigger) -> ReembedRun:
+        """Re-embed linked recordings with the current model (see :mod:`app.voice.reembed`).
+
+        Raises :class:`app.voice.reembed.ReembedAlreadyRunningError` while a run is in progress.
+        """
+        num_threads = await _read_int("voice.speaker_id.num_threads")
+        return await self.reembedder.run(num_threads=num_threads, trigger=trigger)
 
     async def warm_up(self, num_threads: int | None = None) -> bool:
         """Load the engine and the VAD (downloading models when missing). Never raises.

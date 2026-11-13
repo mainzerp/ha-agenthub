@@ -1,4 +1,4 @@
-"""Voice model provisioning: CAM++ speaker embeddings and Silero VAD (16 kHz).
+"""Voice model provisioning: ERes2Net speaker embeddings and Silero VAD (16 kHz).
 
 The container image ships both models under :data:`IMAGE_MODEL_DIR`. When a
 model is missing (dev/test environments), it is downloaded once into the
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 # Stable model identifier stored with every voice sample: samples computed
 # by a different model are never mixed into a profile centroid.
-MODEL_ID = "3dspeaker_speech_campplus_sv_en_voxceleb_16k"
+MODEL_ID = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k"
 MODEL_FILENAME = f"{MODEL_ID}.onnx"
 # Keep in sync with the pre-download step in container/Dockerfile.
 MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{MODEL_FILENAME}"
-MODEL_SHA256 = "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
-MODEL_SIZE_BYTES = 29_596_978
+MODEL_SHA256 = "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
+MODEL_SIZE_BYTES = 26_485_263
 
 # Silero voice-activity detector used to trim silence before embedding.
 # Keep in sync with the pre-download step in container/Dockerfile.

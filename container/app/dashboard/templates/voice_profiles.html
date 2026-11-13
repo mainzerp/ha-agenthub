@@ -96,7 +96,15 @@
                 <dt class="form-label">Engine error</dt>
                 <dd class="text-danger text-sm break-all" x-text="status.engine_error"></dd>
             </div>
+            <div class="col-span-full">
+                <dt class="form-label">Re-embed recorded samples</dt>
+                <dd class="flex-center flex-wrap">
+                    <button class="btn btn-sm btn-secondary" @click="reembedRecordings()" :disabled="reembedding || (status.reembed && status.reembed.running) || status.engine !== 'ready'" :title="status.engine === 'ready' ? null : 'The speaker engine must be ready'">Re-embed recordings</button>
+                    <span class="text-sm text-muted" x-text="reembedLabel(status.reembed)"></span>
+                </dd>
+            </div>
         </dl>
+        <p class="text-muted text-sm mt-sm">After a speaker-model change, recorded enrollment samples and assigned turns are embedded again with the current model (automatically once at startup). Profiles without recordings must be enrolled again.</p>
 
         <form class="mt-md" @submit.prevent="saveSettings()">
             <div class="form-grid">
@@ -539,6 +547,7 @@ function voiceProfilesPage() {
         turnSelection: {},
         turnRejections: {},
         assigningTurn: null,
+        reembedding: false,
         now: Date.now(),
         refreshInterval: null,
 
@@ -885,6 +894,39 @@ function voiceProfilesPage() {
             } catch (e) {
                 if (e.code === 'auth_expired') return;
                 window.toast(e.detail || 'Failed to delete sample', 'error');
+            }
+        },
+
+        reembedCounts(run) {
+            return run.reembedded + ' re-embedded, ' + run.skipped + ' skipped, ' + run.failed + ' failed';
+        },
+
+        reembedLabel(state) {
+            if (!state) return '';
+            if (state.running) return 'Running...';
+            var run = state.last_run;
+            if (!run) return 'No run since the last restart.';
+            var at = run.finished_at ? new Date(run.finished_at).toLocaleString() : '';
+            return 'Last run (' + run.trigger + (at ? ', ' + at : '') + '): ' + this.reembedCounts(run);
+        },
+
+        async reembedRecordings() {
+            this.reembedding = true;
+            try {
+                var run = await window.dashboardApi.json('/api/admin/voice/reembed', { method: 'POST' });
+                window.toast('Re-embed finished: ' + this.reembedCounts(run), run.failed ? 'info' : 'success');
+                await this.loadStatus();
+                if (run.reembedded) {
+                    await Promise.all([this.loadProfiles(), this.loadTurns()]);
+                    for (var id in this.samples) {
+                        if (this.samples[id] && this.samples[id].open) await this.loadSamples(Number(id));
+                    }
+                }
+            } catch (e) {
+                if (e.code === 'auth_expired') return;
+                window.toast(e.detail || 'Failed to re-embed recordings', 'error');
+            } finally {
+                this.reembedding = false;
             }
         },
 

@@ -14,7 +14,7 @@ import pytest
 from app.analytics.tracer import SpanCollector, sanitize_trace_metadata
 from app.db.repository import SettingsRepository, VoiceProfileRepository
 from app.db.schema import _create_indexes, _create_tables, _seed_defaults
-from app.db.schema._migrations import _run_migrations
+from app.db.schema._migrations import _migrate_to_51, _run_migrations
 from app.defaults import VOICE_DEFAULTS
 from app.models.agent import TaskContext
 from app.voice import model as voice_model
@@ -857,10 +857,12 @@ class TestDiagnostics:
 
 
 def test_new_defaults():
-    assert VOICE_DEFAULTS["voice.speaker_id.margin"] == 0.12
+    # threshold, margin and enroll_min_similarity: calibrated for ERes2Net (migration 57).
+    assert VOICE_DEFAULTS["voice.speaker_id.threshold"] == 0.45
+    assert VOICE_DEFAULTS["voice.speaker_id.margin"] == 0.15
     assert VOICE_DEFAULTS["voice.speaker_id.min_duration_s"] == 1.0
     assert VOICE_DEFAULTS["voice.speaker_id.min_enroll_duration_s"] == 1.5
-    assert VOICE_DEFAULTS["voice.speaker_id.enroll_min_similarity"] == 0.45
+    assert VOICE_DEFAULTS["voice.speaker_id.enroll_min_similarity"] == 0.5
 
 
 async def test_enroll_min_similarity_is_loaded_and_clamped(db_repository):
@@ -899,7 +901,8 @@ class TestMigration51:
                     "voice.speaker_id.min_enroll_duration_s": "2.5",
                 },
             )
-            await _run_migrations(db)
+            # Migration 51 alone: migration 57 resets margin and enroll_min_similarity afterwards.
+            await _migrate_to_51(db)
             await db.commit()
             values = await _settings(db)
             assert values["voice.speaker_id.margin"] == "0.12"
@@ -925,13 +928,12 @@ class TestMigration51:
                     "voice.speaker_id.min_enroll_duration_s": "2.0",
                 },
             )
-            await _run_migrations(db)
+            await _migrate_to_51(db)
             await db.execute("UPDATE settings SET value = '0.3' WHERE key = 'voice.speaker_id.enroll_min_similarity'")
             await db.commit()
             first = await _settings(db)
             # Re-running is a no-op.
-            await db.execute("DELETE FROM schema_version WHERE version >= 51")
-            await _run_migrations(db)
+            await _migrate_to_51(db)
             await db.commit()
             assert await _settings(db) == first
             assert first["voice.speaker_id.margin"] == "0.15"
@@ -950,10 +952,11 @@ class TestMigration51:
             await _run_migrations(db)
             await db.commit()
             values = await _settings(db)
-            assert values["voice.speaker_id.margin"] == "0.12"
+            assert values["voice.speaker_id.threshold"] == "0.45"
+            assert values["voice.speaker_id.margin"] == "0.15"
             assert values["voice.speaker_id.min_duration_s"] == "1.0"
             assert values["voice.speaker_id.min_enroll_duration_s"] == "1.5"
-            assert values["voice.speaker_id.enroll_min_similarity"] == "0.45"
+            assert values["voice.speaker_id.enroll_min_similarity"] == "0.5"
         finally:
             await shutdown_aiosqlite(db)
 

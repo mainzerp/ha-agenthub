@@ -41,6 +41,7 @@ from app.voice.recordings import (
     is_valid_turn_id,
     read_wav_pcm,
 )
+from app.voice.reembed import ReembedAlreadyRunningError
 from app.voice.service import (
     STATUS_IDENTIFIED,
     STATUS_NO_PROFILES,
@@ -124,6 +125,7 @@ async def voice_status() -> dict[str, Any]:
         "keep_audio": config.keep_audio,
         "audio_retention_days": config.audio_retention_days,
         "recorded_turns": recorded_turns,
+        "reembed": service.reembedder.status(),
     }
 
 
@@ -521,6 +523,34 @@ async def delete_voice_turn(turn_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Voice turn not found")
     await delete_audio_files([audio_path])
     return {"ok": True}
+
+
+@router.post("/reembed", response_model=None)
+async def reembed_voice_recordings() -> dict[str, Any] | JSONResponse:
+    """Re-embed recorded enrollment samples with the current speaker model.
+
+    Every recorded turn linked to a sample (``enrolled`` recordings and
+    assigned turns) whose sample is missing or of another model gets a new
+    current-model sample from its audio; see :mod:`app.voice.reembed`.
+    Returns the counts ``reembedded``, ``skipped`` (already current or
+    changed during the run) and ``failed`` (audio missing or unreadable,
+    embedding failed). 409 ``reembed_running`` while a run is in progress;
+    503 ``engine_unavailable`` while the engine is not loaded (a warm-up is
+    started).
+    """
+    service = get_speaker_service()
+    if service.reembedder.running:
+        return _turn_error(409, "reembed_running", "A re-embed run is already in progress")
+    if service.engine.status != "ready":
+        service.schedule_warm_up()
+        return _turn_error(
+            503, "engine_unavailable", "The speaker engine is not ready yet; try again once it is loaded"
+        )
+    try:
+        run = await service.reembed_recordings("manual")
+    except ReembedAlreadyRunningError:
+        return _turn_error(409, "reembed_running", "A re-embed run is already in progress")
+    return {"ok": True, **run.as_dict()}
 
 
 @router.delete("/turns")

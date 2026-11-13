@@ -69,15 +69,15 @@ ENV HF_HOME=/data/hf_cache
 ARG EMBEDDING_MODEL=intfloat/multilingual-e5-base
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
 
-# Pre-download the speaker-identification model (CAM++ English VoxCeleb,
+# Pre-download the speaker-identification model (ERes2Net English VoxCeleb,
 # 16 kHz) with a checksum check. Keep in sync with MODEL_URL / MODEL_SHA256
 # in app/voice/model.py; the app falls back to a one-time download into
 # /data/models/speaker when this file is missing.
-ARG SPEAKER_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
-ARG SPEAKER_MODEL_SHA256=357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b
+ARG SPEAKER_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx
+ARG SPEAKER_MODEL_SHA256=c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5
 RUN mkdir -p /opt/models/speaker \
     && python -c "import hashlib, sys, urllib.request; \
-p = '/opt/models/speaker/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx'; \
+p = '/opt/models/speaker/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx'; \
 urllib.request.urlretrieve('${SPEAKER_MODEL_URL}', p); \
 digest = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
 sys.exit(0 if digest == '${SPEAKER_MODEL_SHA256}' else 'speaker model checksum mismatch')" \

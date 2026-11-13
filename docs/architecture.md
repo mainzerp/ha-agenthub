@@ -529,7 +529,7 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    that is not 16 kHz); an empty speech buffer is never embedded
    (`too_short` / `no_speech`). A data-directory VAD model that fails to
    load is deleted so the next attempt re-downloads it. VAD never fails
-   or delays a turn. It then computes a CAM++ speaker embedding of the
+   or delays a turn. It then computes an ERes2Net speaker embedding of the
    speech with sherpa-onnx in a worker thread
    (`app/voice/speaker_engine.py`) and cosine-matches it against
    per-profile centroids (mean of L2-normalized samples of the current
@@ -540,7 +540,12 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    `/data/models/speaker` (size and SHA-256 verified). A voice turn never
    waits for a model (re)load: a changed `num_threads` is applied by a
    background reload while the loaded extractor keeps serving (kept on
-   failure).
+   failure). Samples carry the model id; after a model change
+   `app/voice/reembed.py` embeds the stored (already trimmed) audio of
+   every recorded turn linked to a sample again, stores it as a new
+   current-model sample of the same profile and moves the turn's link
+   to it: once in a background task after the startup warm-up (feature
+   enabled) and on `POST /api/admin/voice/reembed`, one run at a time.
    While an enrollment is armed, the speech embedding passes a sample
    guard (`check_enrollment_sample` in `app/voice/profiles.py`) before it
    may be stored. The enrollment declares the speaker, so a sample whose

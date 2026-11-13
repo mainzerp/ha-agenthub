@@ -199,16 +199,21 @@ class TestVoiceSettings:
     async def test_seeded_defaults(self, db_repository):
         rows = {row["key"]: row for row in await SettingsRepository.get_by_category("voice")}
         assert rows["voice.speaker_id.enabled"]["value"] == "false"
-        assert rows["voice.speaker_id.threshold"]["value"] == "0.55"
-        assert rows["voice.speaker_id.margin"]["value"] == "0.12"
+        assert rows["voice.speaker_id.threshold"]["value"] == "0.45"
+        assert rows["voice.speaker_id.margin"]["value"] == "0.15"
         assert rows["voice.speaker_id.min_duration_s"]["value"] == "1.0"
         assert rows["voice.speaker_id.min_enroll_duration_s"]["value"] == "1.5"
-        assert rows["voice.speaker_id.enroll_min_similarity"]["value"] == "0.45"
+        assert rows["voice.speaker_id.enroll_min_similarity"]["value"] == "0.5"
         assert rows["voice.speaker_id.wait_ms"]["value"] == "500"
         assert rows["voice.speaker_id.num_threads"]["value"] == "2"
         config = await load_voice_config()
         assert config == _config(
-            enabled=False, margin=0.12, min_duration_s=1.0, min_enroll_duration_s=1.5, enroll_min_similarity=0.45
+            enabled=False,
+            threshold=0.45,
+            margin=0.15,
+            min_duration_s=1.0,
+            min_enroll_duration_s=1.5,
+            enroll_min_similarity=0.5,
         )
 
     @pytest.mark.parametrize(
@@ -246,7 +251,7 @@ class TestVoiceSettings:
         await SettingsRepository.set("voice.speaker_id.threshold", "garbage", "float", "voice")
         config = await load_voice_config()
         assert config.wait_ms == 3000
-        assert config.threshold == 0.55
+        assert config.threshold == 0.45
 
 
 # ---------------------------------------------------------------------------

@@ -1224,6 +1224,38 @@ async def _migrate_to_56(db: aiosqlite.Connection) -> None:
     await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (56)")
 
 
+# Voice speaker-ID settings calibrated for the ERes2Net speaker model
+# (migration 57): (key, new value). Set unconditionally: values tuned for the
+# previous CAM++ model, default or not, do not carry over to another
+# embedding space. Keep in sync with VOICE_DEFAULTS (fresh installs).
+_VOICE_MODEL_SWITCH_57: tuple[tuple[str, str], ...] = (
+    ("voice.speaker_id.threshold", "0.45"),
+    ("voice.speaker_id.margin", "0.15"),
+    ("voice.speaker_id.enroll_min_similarity", "0.5"),
+)
+
+
+async def _migrate_to_57(db: aiosqlite.Connection) -> None:
+    # Migration 57: the speaker model changed from CAM++ to ERes2Net, so
+    # the similarity thresholds are reset to the values calibrated for the
+    # new model, admin-edited values included. A missing row is left to the
+    # settings defaults. Idempotent: a value already equal is not rewritten.
+    for key, new_value in _VOICE_MODEL_SWITCH_57:
+        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        if row is None:
+            continue
+        try:
+            unchanged = abs(float(row[0]) - float(new_value)) < 1e-9
+        except (TypeError, ValueError):
+            unchanged = False
+        if unchanged:
+            continue
+        await db.execute("UPDATE settings SET value = ? WHERE key = ?", (new_value, key))
+        logger.info("Migration 57: %s changed from %s to %s for the new speaker model", key, row[0], new_value)
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (57)")
+
+
 # Ordered registry of (version, migration_callable). Each migration records
 # its own version marker. Applied in ascending order for versions greater
 # than the current schema version.
@@ -1283,6 +1315,7 @@ MIGRATIONS: list[tuple[int, Callable[[aiosqlite.Connection], Awaitable[None]]]] 
     (54, _migrate_to_54),
     (55, _migrate_to_55),
     (56, _migrate_to_56),
+    (57, _migrate_to_57),
 ]
 
 

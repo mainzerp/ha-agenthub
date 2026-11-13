@@ -400,6 +400,62 @@ class VoiceTurnRepository:
             return cursor.rowcount > 0
 
     @staticmethod
+    async def list_sample_links() -> list[dict[str, Any]]:
+        """Turns linked to an enrollment sample (recorded enrollments and assigned turns), oldest first.
+
+        ``sample_model`` is the model of the linked sample, None when that
+        sample no longer exists. No embeddings are returned.
+        """
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT t.id, t.audio_path, t.duration_s, t.speech_s, t.model, t.status, t.assigned_profile_id, "
+                "t.assigned_sample_id, s.model AS sample_model "
+                "FROM voice_turns t LEFT JOIN voice_samples s ON s.id = t.assigned_sample_id "
+                "WHERE t.assigned_profile_id IS NOT NULL ORDER BY t.created_at, t.id"
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def replace_linked_sample(
+        turn_id: str,
+        *,
+        profile_id: int,
+        expected_sample_id: int | None,
+        embedding: bytes,
+        dim: int,
+        model: str,
+        duration_s: float | None,
+        speech_s: float | None,
+    ) -> int | None:
+        """Store a re-embedded sample of a linked turn and move the turn to it, in one transaction.
+
+        The turn gets the new embedding, dim and model and links to the new
+        sample; the previously linked sample stays. Returns the new sample
+        id, or None when the turn is no longer linked to
+        ``expected_sample_id`` of ``profile_id`` or the profile is gone
+        (nothing is written then).
+        """
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM voice_turns t JOIN voice_profiles p ON p.id = t.assigned_profile_id "
+                "WHERE t.id = ? AND t.assigned_profile_id = ? AND t.assigned_sample_id IS ?",
+                (turn_id, profile_id, expected_sample_id),
+            )
+            if await cursor.fetchone() is None:
+                return None
+            cursor = await db.execute(
+                "INSERT INTO voice_samples (profile_id, embedding, dim, model, duration_s, speech_s, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (profile_id, embedding, dim, model, duration_s, speech_s, _now()),
+            )
+            sample_id = int(cursor.lastrowid or 0)
+            await db.execute(
+                "UPDATE voice_turns SET embedding = ?, dim = ?, model = ?, assigned_sample_id = ? WHERE id = ?",
+                (embedding, dim, model, sample_id, turn_id),
+            )
+            return sample_id
+
+    @staticmethod
     async def delete_turn(turn_id: str) -> str | None:
         """Delete one turn. Returns its audio file name, or None when it did not exist."""
         async with get_db_write() as db:

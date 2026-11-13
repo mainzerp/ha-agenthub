@@ -42,11 +42,13 @@ MEMORY_DEFAULTS: dict[str, object] = {
 
 VOICE_DEFAULTS: dict[str, object] = {
     "voice.speaker_id.enabled": False,
-    "voice.speaker_id.threshold": 0.55,
-    "voice.speaker_id.margin": 0.12,
+    # threshold, margin and enroll_min_similarity are calibrated for the
+    # ERes2Net speaker model (app/voice/model.py); migration 57 moved them.
+    "voice.speaker_id.threshold": 0.45,
+    "voice.speaker_id.margin": 0.15,
     "voice.speaker_id.min_duration_s": 1.0,
     "voice.speaker_id.min_enroll_duration_s": 1.5,
-    "voice.speaker_id.enroll_min_similarity": 0.45,
+    "voice.speaker_id.enroll_min_similarity": 0.50,
     "voice.speaker_id.wait_ms": 500,
     "voice.speaker_id.num_threads": 2,
     "voice.speaker_id.keep_audio": False,

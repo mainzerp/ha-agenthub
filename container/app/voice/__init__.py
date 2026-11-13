@@ -1,4 +1,4 @@
-"""Voice speaker identification (sherpa-onnx CAM++ embeddings, context only)."""
+"""Voice speaker identification (sherpa-onnx ERes2Net embeddings, context only)."""
 
 from app.voice.service import (  # noqa: F401
     PendingSpeakerLookup,

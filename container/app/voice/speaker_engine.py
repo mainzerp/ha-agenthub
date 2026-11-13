@@ -1,4 +1,4 @@
-"""Lazy, thread-safe speaker-embedding extractor (sherpa-onnx CAM++).
+"""Lazy, thread-safe speaker-embedding extractor (sherpa-onnx, model from app.voice.model).
 
 The extractor is loaded on first use (model download included when the
 image does not ship it) and every inference runs in a worker thread via
