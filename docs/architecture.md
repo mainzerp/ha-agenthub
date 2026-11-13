@@ -522,7 +522,8 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    (clamped to the buffer), so leading and trailing silence never shapes
    the embedding. Pauses inside the utterance are kept: joining the speech
    segments destabilized same-speaker embeddings. The duration rules
-   (`min_duration_s`, `min_enroll_duration_s`) apply to the detected
+   (`min_duration_s`, `min_enroll_duration_s`) apply first to the raw turn
+   length (shorter turns skip VAD and embedding) and then to the detected
    speech seconds (`speech_s`, the summed speech segments without pauses
    or padding). When the VAD is not loaded yet or fails, the
    whole buffer is used and the result says `vad=false` (also for audio
@@ -1095,7 +1096,7 @@ The index name (`EntityIndexEntry.friendly_name`) is what keyword recall, the de
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
 - **sqlite-vec** -- Vector store for entity index embeddings, the routing cache semantic tier, and session memory turn embeddings. Entity index and routing cache embeddings live in dedicated SQLite databases; session memory uses its own `session_memory.db`. Persisted to disk under `/data`.
-- **Voice profiles** -- `voice_profiles` (name, optional `ha_user_id`) and `voice_samples` (float32 embedding BLOB, `dim`, `model`, `duration_s`) in the primary SQLite store (migration 49). Samples are tagged with the embedding model and only same-model samples form a centroid. The speaker model ships in the image at `/opt/models/speaker/`; fallback download to `<db dir>/models/speaker/`.
+- **Voice profiles** -- `voice_profiles` (name, optional `ha_user_id`) and `voice_samples` (float32 embedding BLOB, `dim`, `model`, `duration_s`, `speech_s`) in the primary SQLite store (migrations 49, 51). Samples are tagged with the embedding model and only same-model samples form a centroid. Recorded turns (opt-in `keep_audio`, migration 53) live in `voice_turns` (embedding, status including `enrolled`, score, sample link `assigned_*`) with the trimmed WAV under `<db dir>/voice_turns/`. The speaker model (ERes2Net) and the Silero VAD model ship in the image at `/opt/models/speaker/`; fallback download to `<db dir>/models/speaker/`.
 - **Cache DB** -- Routing and action cache entries (documents, metadata, and the semantic embeddings of the routing tier) live in `cache.db` under `CHROMADB_PERSIST_DIR` (default `/data/chromadb/cache.db`), separate from the primary SQLite store.
 
 ## Plugin Architecture

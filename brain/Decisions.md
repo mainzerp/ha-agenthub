@@ -19,10 +19,22 @@ not copies of rules.
   `enrolled` voice turns.** Rationale: embeddings are model-specific; only
   audio lets alternative speaker models be benchmarked on clean, labeled
   data (and later re-embed profiles after a model switch).
-- **Model switch is now on the table.** Same-speaker CAM++ cosine on the Echo
-  Show 5 ranged 0.21-0.87 (cross-speaker 0.52-0.66), so input and enrollment
-  fixes alone will not separate the two speakers; the choice waits for the
-  offline benchmark on recorded enrollment audio.
+- **Speaker model switched to ERes2Net en-voxceleb (3D-Speaker, 192-dim).**
+  Offline benchmark of 11 sherpa-onnx models on 33 recorded enrollment clips
+  plus 4 labeled turns: CAM++ en-voxceleb pair EER 0.42 (worst); ERes2Net,
+  TitaNet large, CAM++ zh_en advanced and ERes2NetV2 EER 0.000. ERes2Net won
+  on separation (cross-speaker median 0.13) at 26.5 MB and ~13 ms per audio
+  second; TitaNet large separates slightly more but is 4x larger; the
+  multilingual CAM++ is faster but separates less (cross median 0.28).
+  Training on English VoxCeleb is not a blocker: the measurements are on the
+  owners' German speech.
+- **Migration 57 overwrites threshold/margin/enroll_min_similarity
+  (0.45/0.15/0.50), admin values included.** Rationale: values calibrated
+  for another model are meaningless; the owner agreed.
+- **Profiles survive a model switch by re-embedding sample-linked
+  recordings** (startup and `POST /api/admin/voice/reembed`). Samples whose
+  link was cleared are not re-created: a cleared link means a deliberate
+  delete.
 
 ## 2026-11-12 — Wake word stripped at the conversation boundary
 
