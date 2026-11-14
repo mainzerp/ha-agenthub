@@ -17,6 +17,7 @@ import litellm
 
 from app.agents.agent_registry import CachedAgentRegistry
 from app.agents.cache_orchestrator import routing_hit_is_still_valid
+from app.agents.turn_scope import turns_are_fresh
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import CacheManager
 from app.llm.client import LLMError
@@ -371,7 +372,18 @@ class ClassificationEngine:
             else:
                 turns = []
             previous_agent_hint = ""
-            if turns:
+            # The current request has priority: an older history is
+            # background only and gets no previous-agent routing hint
+            # (unless a clarifying question is still open).
+            history_fresh = bool(pending_question) or turns_are_fresh(turns)
+            subspan["metadata"]["history_fresh"] = history_fresh
+            if turns and not history_fresh:
+                previous_agent_hint = (
+                    "The conversation history is older and background information only. Classify the "
+                    "final user message on its own; use the history only to resolve an explicit reference "
+                    "in it."
+                )
+            elif turns:
                 for turn in reversed(turns):
                     if turn.get("role") == "assistant":
                         agent_id_turn = turn.get("agent_id")

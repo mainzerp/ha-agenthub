@@ -41,6 +41,26 @@ Live pipeline in board format — headings are columns, cards are
 
 ## Testing
 
+- Speaker change and stale history must not steer routing (#236) · priority: P1 · area: orchestrator
+  Outcome: a confidently identified speaker change hides the other
+  speaker's turns, anaphora hints and pending question from routing and
+  agents; the previous-agent hint only applies when the newest turn is at
+  most 120 s old or a question is open; RULE 3 classifies a self-contained
+  message on its own. Trigger: live trace a95c20519d4748b2. Change:
+  `agents/turn_scope.py` (new), conversation_manager (`ts`,
+  `speaker_profile_id` per turn), orchestrator `_scope_turns_to_speaker`,
+  classification_engine, `PendingSpeakerLookup.peek_profile_id`,
+  prompts/orchestrator.txt; docs architecture.md (Conversation History
+  Scope). Not committed. Passed: tests/test_turn_scope.py (19),
+  TestSpeakerChangeScope + peek tests in test_voice_orchestrator.py (2 of 3
+  scope tests fail with the filter disabled), ruff; full container suite
+  5738 passed, 1 xdist worker crash in test_voice_recordings.py (passes 3x
+  alone). Needs user verification after deploy: one person asks for the
+  fan, the other says "Küche einschalten" on the same satellite within
+  30 min -> light-agent, trace shows a `turn_scope` span with
+  `dropped_turns`; same person after more than 2 min -> span
+  `classify.conversation_turns` shows `history_fresh: false`.
+
 - Cache voice turns with an identified speaker · priority: P1 · area: cache
   Outcome: identified-speaker turns write cache rows again (routing always,
   action row when the text names the entity). Trigger: live traces

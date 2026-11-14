@@ -49,10 +49,16 @@ from app.agents.mediation import (
     normalize_reasoning_effort,
     speech_source_of,
 )
-from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id, requester_identity
+from app.agents.personalization import (
+    mediation_speaker_kwargs,
+    personalization_user_id,
+    requester_identity,
+    speaker_profile_id,
+)
 from app.agents.prompt_builder import contains_no_content_sentinel
 from app.agents.sanitize import strip_markdown, strip_markdown_markers, strip_parenthetical_asides
 from app.agents.task_pipeline import PipelineDirector
+from app.agents.turn_scope import SPEAKER_SCOPE_WAIT_S, scope_turns_to_speaker
 from app.analytics.collector import track_request, track_request_background
 from app.analytics.tracer import _optional_span, record_request_attribute, sanitize_trace_value
 from app.cache.cache_manager import ActionReplayOutcome, RoutingSkipOutcome
@@ -1586,6 +1592,12 @@ class OrchestratorAgent(BaseAgent):
                     _trace_memory_retrieval(memory_task, span_collector, memory_span_state)
                 )
 
+            # Speaker change: the turns of another identified speaker never
+            # steer routing or the agent (see app.agents.turn_scope).
+            lang_turns = await self._scope_turns_to_speaker(
+                task, conversation_id, lang_turns, speaker_lookup, span_collector
+            )
+
             if publish_events and self._event_bus is not None:
                 await self._event_bus.publish(
                     "pipeline.pre_classify", {"task": task, "user_text": user_text, "language": detected_language}
@@ -1711,6 +1723,59 @@ class OrchestratorAgent(BaseAgent):
             used_origin_context=used_origin_context,
             routing_entry_id=(routing_skip.entry_id or None) if routing_skip is not None else None,
         )
+
+    async def _scope_turns_to_speaker(
+        self,
+        task: IngressTask,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        speaker_lookup: PendingSpeakerLookup | None,
+        span_collector: Any,
+    ) -> list[dict[str, Any]]:
+        """Hide another identified speaker's turns before classification.
+
+        Peeks at the voice speaker (bounded by ``SPEAKER_SCOPE_WAIT_S``). On a
+        confident speaker change the other speaker's exchanges are dropped
+        from the turns used for routing and agent context, the anaphora
+        recency hints of the conversation are cleared and a clarifying
+        question asked to the other speaker no longer counts as pending for
+        this turn. Without an identified current speaker the turns are
+        returned unchanged.
+        """
+        if speaker_lookup is None or not turns:
+            return turns
+        current = await speaker_lookup.peek_profile_id(SPEAKER_SCOPE_WAIT_S)
+        scope = scope_turns_to_speaker(turns, current)
+        if not scope.speaker_changed:
+            return turns
+        ctx = task.context
+        dropped_pending = False
+        if ctx is not None:
+            ctx.last_entities = []
+            if ctx.pending_question:
+                ctx.pending_question = None
+                ctx.is_followup = False
+                self._conversation_manager.forget_popped_pending(conversation_id)
+                dropped_pending = True
+        async with _optional_span(span_collector, "turn_scope", agent_id="orchestrator") as span:
+            span["metadata"].update(
+                {
+                    "speaker_changed": True,
+                    "previous_speaker_profile_id": scope.previous_speaker_profile_id,
+                    "speaker_profile_id": current,
+                    "dropped_turns": scope.dropped_turns,
+                    "kept_turns": len(scope.turns),
+                    "dropped_pending_question": dropped_pending,
+                }
+            )
+        logger.debug(
+            "Speaker change in conversation %s (%s -> %s): dropped %d turn(s)",
+            conversation_id,
+            scope.previous_speaker_profile_id,
+            current,
+            scope.dropped_turns,
+        )
+        return scope.turns
 
     def _drop_stale_followup_context(
         self,
@@ -1956,6 +2021,7 @@ class OrchestratorAgent(BaseAgent):
             language=language,
             source=source,
             memory_user_id=personalization_user_id(task.context)[0],
+            speaker_profile_id=speaker_profile_id(task.context),
         )
         if span_collector:
             await self._create_trace(
@@ -2366,6 +2432,7 @@ class OrchestratorAgent(BaseAgent):
                 language=detected_language,
                 source=task.context.source if task.context else None,
                 memory_user_id=personalization_user_id(task.context)[0],
+                speaker_profile_id=speaker_profile_id(task.context),
             )
             if span_collector:
                 await self._create_trace(
@@ -2588,6 +2655,7 @@ class OrchestratorAgent(BaseAgent):
                     language=detected_language,
                     source=task.context.source if task.context else None,
                     memory_user_id=personalization_user_id(task.context)[0],
+                    speaker_profile_id=speaker_profile_id(task.context),
                 )
                 if span_collector:
                     clf = classifications
@@ -3231,6 +3299,7 @@ class OrchestratorAgent(BaseAgent):
                 language=language,
                 source=task.context.source if task.context else None,
                 memory_user_id=personalization_user_id(task.context)[0],
+                speaker_profile_id=speaker_profile_id(task.context),
             )
             if span_collector:
                 await self._create_trace(
@@ -3694,6 +3763,7 @@ class OrchestratorAgent(BaseAgent):
         language: str | None = None,
         source: str | None = None,
         memory_user_id: str | None = None,
+        speaker_profile_id: int | None = None,
     ) -> None:
         await self._conversation_manager.store_turn(
             conversation_id,
@@ -3705,6 +3775,7 @@ class OrchestratorAgent(BaseAgent):
             language=language,
             source=source,
             memory_user_id=memory_user_id,
+            speaker_profile_id=speaker_profile_id,
         )
 
     def _evict_stale_conversations(self) -> None:

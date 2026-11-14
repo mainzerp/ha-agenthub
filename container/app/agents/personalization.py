@@ -37,6 +37,20 @@ def identified_speaker(context: Any) -> Any | None:
     return speaker
 
 
+def speaker_profile_id(context: Any) -> int | None:
+    """Voice profile id of an identified speaker, else None.
+
+    Pure voice identity for the conversation routing scope
+    (:mod:`app.agents.turn_scope`): unlike :func:`identified_speaker` it
+    does not depend on the request's Home Assistant user.
+    """
+    speaker = getattr(context, "speaker", None) if context is not None else None
+    if speaker is None or getattr(speaker, "status", None) != SPEAKER_STATUS_IDENTIFIED:
+        return None
+    profile_id = getattr(speaker, "profile_id", None)
+    return profile_id if isinstance(profile_id, int) and not isinstance(profile_id, bool) else None
+
+
 def personalization_user_id(context: Any) -> tuple[str | None, IdentitySource]:
     """Return ``(user_id, source)`` for personalization of this turn.
 

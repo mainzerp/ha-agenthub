@@ -1441,7 +1441,7 @@ class TestOrchestratorAgent:
         await orch._store_turn("conv-agent-id", "hello", "world", agent_id="general-agent")
         turns = await orch._get_turns("conv-agent-id")
         assert len(turns) == 2
-        assert turns[0] == {"role": "user", "content": "hello"}
+        assert {k: v for k, v in turns[0].items() if k != "ts"} == {"role": "user", "content": "hello"}
         assert turns[1]["role"] == "assistant"
         assert turns[1]["content"] == "world"
         assert turns[1]["agent_id"] == "general-agent"

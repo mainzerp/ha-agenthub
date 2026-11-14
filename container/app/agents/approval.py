@@ -494,7 +494,7 @@ async def _finish(
     from app.agents.cache_orchestrator import record_cache_lookup_skipped
     from app.agents.conversation_manager import extract_resolved_entities
     from app.agents.followup import resolve_voice_followup
-    from app.agents.personalization import personalization_user_id
+    from app.agents.personalization import personalization_user_id, speaker_profile_id
     from app.voice import discard_pending_speaker
 
     context = getattr(task, "context", None)
@@ -531,6 +531,7 @@ async def _finish(
             language=getattr(context, "language", None),
             source=source,
             memory_user_id=personalization_user_id(context)[0] if context is not None else None,
+            speaker_profile_id=speaker_profile_id(context),
         )
     if span_collector is not None:
         await orch._create_trace(

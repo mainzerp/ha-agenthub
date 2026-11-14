@@ -10,8 +10,10 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from datetime import UTC, datetime
 from typing import Any
 
+from app.agents.turn_scope import TURN_SPEAKER_KEY, TURN_TS_KEY
 from app.db.repository import ConversationRepository, SettingsRepository
 from app.memory import get_memory_service
 from app.models.agent import source_is_stateless_task
@@ -36,6 +38,20 @@ _DEFAULT_LAST_ENTITIES_LIMIT = 3
 # Pending-question map: TTL for the single-shot follow-up signal set when
 # the last assistant turn was a clarifying question (voice_followup).
 _PENDING_QUESTION_TTL_SECONDS = 300
+
+
+def _row_timestamp(row: dict[str, Any]) -> float | None:
+    """Wall-clock time of a persisted turn (``created_at`` is UTC), None when unparsable."""
+    raw = row.get("created_at")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
 
 
 async def extract_resolved_entities(
@@ -170,13 +186,17 @@ class ConversationManager:
             return []
 
         conversation_turns: list[dict[str, Any]] = []
+        # The speaker is not persisted: turns restored from the DB carry no
+        # speaker and never count as evidence of a speaker change.
         for row in rows[-turn_limit:]:
+            row_ts = _row_timestamp(row)
+            stamp = {TURN_TS_KEY: row_ts} if row_ts is not None else {}
             user_text = row.get("user_text") or ""
             if user_text:
-                conversation_turns.append({"role": "user", "content": user_text})
+                conversation_turns.append({"role": "user", "content": user_text, **stamp})
             resp_text = row.get("response_text") or ""
             if resp_text:
-                assistant_turn: dict[str, Any] = {"role": "assistant", "content": resp_text}
+                assistant_turn: dict[str, Any] = {"role": "assistant", "content": resp_text, **stamp}
                 agent_id = row.get("agent_id")
                 if agent_id:
                     assistant_turn["agent_id"] = agent_id
@@ -198,6 +218,7 @@ class ConversationManager:
         language: str | None = None,
         source: str | None = None,
         memory_user_id: str | None = None,
+        speaker_profile_id: int | None = None,
     ) -> None:
         """Store a conversation turn, keeping the configured number of exchanges.
 
@@ -206,6 +227,11 @@ class ConversationManager:
         personalization identity used only for the session-memory bucket
         (see :func:`app.agents.personalization.personalization_user_id`);
         it defaults to ``user_id``.
+
+        Both turn dicts carry the wall-clock time (``ts``); the user turn
+        carries ``speaker_profile_id`` of an identified voice speaker. They
+        drive the routing scope in :mod:`app.agents.turn_scope` and are kept
+        in memory only.
 
         ``resolved_entities`` (ENTITY_RES_REDESIGN Phase 6): entities that
         were resolved and acted on this turn (success path only), as
@@ -230,8 +256,12 @@ class ConversationManager:
             _, turns = self._conversations[conversation_id]
         else:
             turns = []
-        turns.append({"role": "user", "content": user_text})
-        assistant_turn = {"role": "assistant", "content": assistant_text}
+        wall_ts = time.time()
+        user_turn: dict[str, Any] = {"role": "user", "content": user_text, TURN_TS_KEY: wall_ts}
+        if speaker_profile_id is not None:
+            user_turn[TURN_SPEAKER_KEY] = speaker_profile_id
+        turns.append(user_turn)
+        assistant_turn: dict[str, Any] = {"role": "assistant", "content": assistant_text, TURN_TS_KEY: wall_ts}
         if agent_id:
             assistant_turn["agent_id"] = agent_id
         turns.append(assistant_turn)
@@ -436,6 +466,16 @@ class ConversationManager:
             return None
         payload = self._last_popped_pending.get(conversation_id)
         return payload.get("agent_id") if payload else None
+
+    def forget_popped_pending(self, conversation_id: str | None) -> None:
+        """Drop the payload popped by the current turn without re-arming it.
+
+        Used when the turn turned out not to answer the question (a
+        different speaker asked something new): neither this turn nor a
+        later restore may treat it as pending again.
+        """
+        if conversation_id:
+            self._last_popped_pending.pop(conversation_id, None)
 
     def restore_pending_question(self, conversation_id: str | None) -> None:
         """Re-arm the pending question popped earlier in the same turn.

@@ -466,3 +466,111 @@ class TestSpeakerLookupBudget:
         assert task.context.speaker is not None
         meta = _speaker_spans(collector)[0]["metadata"]
         assert meta["status"] == "identified" and meta["waited_ms"] < 400
+
+    async def test_peek_profile_id_reads_identified_result_without_attaching(self, speaker_service):
+        token, task, collector, lookup = await self._start(speaker_service, "conv-b5", wait_ms=500)
+        speaker_service.store.resolve("conv-b5", token, _IDENTIFIED)
+
+        assert await lookup.peek_profile_id(0.2) == 4
+        assert task.context.speaker is None and _speaker_spans(collector) == []
+        await lookup.join()
+        assert task.context.speaker is not None and task.context.speaker.profile_id == 4
+
+    async def test_peek_profile_id_is_bounded_and_keeps_the_lookup(self, speaker_service):
+        token, task, _collector, lookup = await self._start(speaker_service, "conv-b6", wait_ms=500)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        assert await lookup.peek_profile_id(0.02) is None
+        assert loop.time() - started < 0.2
+        # The lookup keeps running: a later result still attaches at dispatch.
+        speaker_service.store.resolve("conv-b6", token, _IDENTIFIED)
+        await lookup.join()
+        assert task.context.speaker is not None
+
+
+# ---------------------------------------------------------------------------
+# Speaker change: another speaker's turns never steer routing (issue #236)
+# ---------------------------------------------------------------------------
+
+
+def _classify_messages(mock_complete: AsyncMock) -> list[dict]:
+    calls = [c for c in mock_complete.call_args_list if c.args and c.args[0] == "orchestrator"]
+    assert calls, "no classification call"
+    return calls[0].args[1]
+
+
+@pytest.mark.usefixtures("_mock_conversation_repo")
+class TestSpeakerChangeScope:
+    async def _seed_other_speaker_turns(self, orch: OrchestratorAgent, conversation_id: str, profile_id: int):
+        await orch._conversation_manager.store_turn(
+            conversation_id, "turn on the fan", "There is no fan.", "general-agent", speaker_profile_id=profile_id
+        )
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_other_speaker_turns_are_hidden(
+        self, mock_complete, mock_track, mock_settings, speaker_service, voice_enabled
+    ):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orchestrator()
+        await self._seed_other_speaker_turns(orch, "conv-sc1", profile_id=7)
+        _resolved(speaker_service, "conv-sc1", _IDENTIFIED)  # profile 4
+        mock_complete.return_value = "light-agent: turn on the kitchen"
+        task = make_ingress_task("turn on the kitchen", "conv-sc1", TaskContext(language="en", user_id="u1"))
+
+        await orch.handle_task(task)
+
+        classify_text = " ".join(str(m["content"]) for m in _classify_messages(mock_complete))
+        assert "turn on the fan" not in classify_text
+        assert "previous turn was handled by" not in classify_text
+        dispatched = dispatcher.dispatch.call_args.args[0].params["task"]
+        assert dispatched.context.conversation_turns == []
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_same_speaker_keeps_turns(
+        self, mock_complete, mock_track, mock_settings, speaker_service, voice_enabled
+    ):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orchestrator()
+        await self._seed_other_speaker_turns(orch, "conv-sc2", profile_id=4)
+        _resolved(speaker_service, "conv-sc2", _IDENTIFIED)
+        mock_complete.return_value = "general-agent: turn it on again"
+        task = make_ingress_task("turn it on again", "conv-sc2", TaskContext(language="en", user_id="u1"))
+
+        await orch.handle_task(task)
+
+        classify_text = " ".join(str(m["content"]) for m in _classify_messages(mock_complete))
+        assert "turn on the fan" in classify_text
+        dispatched = dispatcher.dispatch.call_args.args[0].params["task"]
+        assert dispatched.context.conversation_turns[0]["content"] == "turn on the fan"
+
+    async def test_speaker_change_drops_pending_question_and_traces(self, speaker_service, voice_enabled):
+        orch, _ = _make_orchestrator()
+        await self._seed_other_speaker_turns(orch, "conv-sc3", profile_id=7)
+        turns = await orch._conversation_manager.get_turns("conv-sc3")
+        orch._conversation_manager.set_pending_question("conv-sc3", "Which fan?", "general-agent")
+        orch._conversation_manager.pop_pending_question("conv-sc3")
+        _resolved(speaker_service, "conv-sc3", _IDENTIFIED)
+        task = make_ingress_task(
+            "turn on the kitchen",
+            "conv-sc3",
+            TaskContext(user_id="u1", pending_question="Which fan?", is_followup=True),
+        )
+        collector = SpanCollector("trace-sc3", source="ha")
+        lookup = start_speaker_lookup(task, "conv-sc3", collector)
+
+        scoped = await orch._scope_turns_to_speaker(task, "conv-sc3", turns, lookup, collector)
+        await lookup.join()
+
+        assert scoped == []
+        assert task.context.pending_question is None and task.context.is_followup is False
+        orch._conversation_manager.restore_pending_question("conv-sc3")
+        assert not orch._conversation_manager.has_pending_question("conv-sc3")
+        spans = [s for s in collector.get_spans() if s["span_name"] == "turn_scope"]
+        assert len(spans) == 1
+        meta = spans[0]["metadata"]
+        assert meta["previous_speaker_profile_id"] == 7 and meta["speaker_profile_id"] == 4
+        assert meta["dropped_turns"] == 2 and meta["dropped_pending_question"] is True

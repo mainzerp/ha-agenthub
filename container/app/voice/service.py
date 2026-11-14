@@ -1176,6 +1176,33 @@ class PendingSpeakerLookup:
         ha_user_id = result.get("ha_user_id")
         return str(ha_user_id) if ha_user_id else None
 
+    async def peek_profile_id(self, max_wait_s: float) -> int | None:
+        """Profile id of an ``identified`` result for the routing scope, else None.
+
+        Waits at most ``max_wait_s`` (and never past the remaining
+        ``wait_ms`` budget), never cancels the lookup and attaches or traces
+        nothing; :meth:`join` still owns that. Used before classification to
+        detect a speaker change (:mod:`app.agents.turn_scope`). Never raises
+        (cancellation excepted).
+        """
+        try:
+            if not self._lookup.done():
+                timeout = min(max_wait_s, self._budget_s())
+                if timeout > 0:
+                    await asyncio.wait({self._lookup}, timeout=timeout)
+            if not self._lookup.done() or self._lookup.cancelled():
+                return None
+            lookup = self._lookup.result()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        result = (lookup.result if lookup is not None else None) or {}
+        if result.get("status") != STATUS_IDENTIFIED:
+            return None
+        profile_id = result.get("profile_id")
+        return profile_id if isinstance(profile_id, int) and not isinstance(profile_id, bool) else None
+
     async def join(self) -> None:
         """Wait for the result (at most the remaining budget) and attach it to ``task.context``.
 

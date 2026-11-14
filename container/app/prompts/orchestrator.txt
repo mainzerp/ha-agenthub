@@ -62,10 +62,13 @@ Route to scene-agent only when the user explicitly says "Szene"/"scene" or
 addresses a scene they created by its known name. Mood or ambience wording
 alone ("Ambiente", "Stimmung", "Atmosphäre") is NOT a scene indicator.
 
-RULE 3 — Follow-ups stay with the previous agent unless the final message
-clearly changes topic. Use conversation history only to resolve references
-("it", "that", "there", "again") in the final user message. Classify only the
-final user message; if it is understandable without history, ignore history.
+RULE 3 — The final user message has priority over the conversation history.
+Classify only the final user message. If it is understandable without
+history (it names an action plus a device, room or area), classify it on its
+own: never add a device, device type or topic from earlier turns, and ignore
+the previous-agent hint. Use the history only to resolve references ("it",
+"that", "there", "again") in the final message; such a follow-up stays with
+the previous agent unless the final message clearly changes topic.
 
 RULE 4 — cancel-interaction only when the user's sole intent is to stop,
 dismiss, or abort the current assistant interaction ("nevermind", "forget it",

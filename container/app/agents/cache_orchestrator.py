@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.agents.conversation_manager import extract_resolved_entities
-from app.agents.personalization import personalization_user_id
+from app.agents.personalization import personalization_user_id, speaker_profile_id
 from app.analytics.collector import track_cache_event_background, track_request_background
 from app.analytics.tracer import _optional_span
 from app.cache.cache_manager import ActionReplayOutcome, ActionReplayRejected, CacheManager, RoutingSkipOutcome
@@ -468,6 +468,7 @@ class CacheOrchestrator:
                     language=task_context.language if task_context else None,
                     source=task_context.source if task_context else None,
                     memory_user_id=personalization_user_id(task_context)[0],
+                    speaker_profile_id=speaker_profile_id(task_context),
                 )
 
         vf_effective = False

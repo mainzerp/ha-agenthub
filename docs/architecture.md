@@ -411,6 +411,35 @@ threshold; otherwise a short filler would wait for the answer. The final
 result speech is filler prefix + answer (unpadded), so chat-log content
 and spoken text agree.
 
+### Conversation History Scope
+
+`ConversationManager` keeps the last `general.conversation_context_turns`
+exchanges per `conversation_id` in memory for 30 minutes (DB fallback after
+a restart). Each stored turn carries its wall-clock time (`ts`); the user
+turn carries `speaker_profile_id` when the voice speaker was identified
+(not persisted; turns restored from the DB have no speaker). The current
+request has priority over this history (`app/agents/turn_scope.py`):
+
+- **Speaker change.** Before classification the prelude peeks at the
+  speaker lookup (`PendingSpeakerLookup.peek_profile_id`, at most
+  `SPEAKER_SCOPE_WAIT_S` = 0.2 s and never past `voice.speaker_id.wait_ms`).
+  When the current speaker is identified and the most recent stored user
+  turn has a different identified speaker, every exchange of another
+  identified speaker is removed from the turns used for classification and
+  agent dispatch (`PipelinePreludeResult.lang_turns`), the anaphora hints
+  (`last_entities`) are cleared and a popped pending question no longer
+  counts for this turn (`pending_question`/`is_followup` cleared, not
+  re-armed). Turns without a speaker stay. Traced as a `turn_scope` span
+  (`speaker_changed`, `previous_speaker_profile_id`, `speaker_profile_id`, `dropped_turns`,
+  `kept_turns`, `dropped_pending_question`).
+- **Freshness.** The classifier adds the previous-agent hint only when the
+  newest turn is at most `TURN_FRESH_SECONDS` (120 s) old or a clarifying
+  question is pending; turns without `ts` count as fresh. Older history is
+  still sent but marked as background information, and the
+  `classify.conversation_turns` span records `history_fresh`. RULE 3 of
+  `prompts/orchestrator.txt` classifies a self-contained final message on
+  its own and uses history only to resolve explicit references.
+
 ### Voice Follow-Up Questions
 
 When a turn ends in a clarifying question (entity not found, ambiguous
@@ -450,7 +479,8 @@ The effective flag is decided in one helper,
 `app/agents/followup.py::resolve_voice_followup`, called by the
 single-agent funnel (`_finalize_post_mediation`, reached by blocking,
 streaming and sequential-send turns) and the multi-agent merge
-(`DefaultFinalizationStrategy`); action-cache replays, cancel and noise
+(`DefaultFinalizationStrategy`), and by the approval-answer turn
+(`app/agents/approval.py::_finish`); action-cache replays, cancel and noise
 turns never request a follow-up. While a voice-profile enrollment is
 armed and speaker identification is enabled
 (`app/voice/service.py::enrollment_active`, in-memory state of the
@@ -612,6 +642,8 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    (hard cap 5 s); at dispatch the turn uses a finished lookup at once,
    otherwise blocks at most the rest of `voice.speaker_id.wait_ms`
    (counted from the lookup start) and then cancels it (`timeout`).
+   Before classification the prelude peeks at the result to detect a
+   speaker change (see [Conversation History Scope](#conversation-history-scope)).
    Only `identified` attaches `TaskContext.speaker` (for every agent);
    only agents that opt in with `_receives_speaker_context = True`
    (`GeneralAgent`, `TimerAgent`) get the prompt line
@@ -636,9 +668,9 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    that no other recorded turn is linked to (`trace_match`
    `time_window`), and joins its `user_input` as the transcript. An early prelude exit cancels the
    lookup and removes the entry. An action-cache replay discards the
-   entry. A turn with an attached speaker is treated as
-   context-dependent and writes no action-cache or routing-cache row, so
-   a personalised reply is never replayed to another speaker.
+   entry. A turn with an attached speaker writes an action-cache row only
+   when its text names every executed entity, otherwise only the routing
+   row (see [Two-Tier Cache](#two-tier-cache), **Not stored**).
 5. **Enrollment turns.** When the conversation turn's entry is marked as
    an enrollment turn (`is_enrollment_turn`), the orchestrator prelude
    exits first (`_exit_type="enrollment"`, `app/agents/enrollment_turn.py`),

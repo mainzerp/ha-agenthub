@@ -18,7 +18,7 @@ from app.agents.conversation_manager import ConversationManager, extract_resolve
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
 from app.agents.followup import resolve_voice_followup
 from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
-from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id
+from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id, speaker_profile_id
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
@@ -595,6 +595,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                     language=language,
                     source=task.context.source if task and task.context else None,
                     memory_user_id=personalization_user_id(task.context if task else None)[0],
+                    speaker_profile_id=speaker_profile_id(task.context if task else None),
                 )
                 if span_collector:
                     await self._create_trace(
