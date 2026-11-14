@@ -51,11 +51,12 @@ Live pipeline in board format — headings are columns, cards are
   `speaker_profile_id` per turn), orchestrator `_scope_turns_to_speaker`,
   classification_engine, `PendingSpeakerLookup.peek_profile_id`,
   prompts/orchestrator.txt; docs architecture.md (Conversation History
-  Scope). Not committed. Passed: tests/test_turn_scope.py (19),
-  TestSpeakerChangeScope + peek tests in test_voice_orchestrator.py (2 of 3
-  scope tests fail with the filter disabled), ruff; full container suite
-  5738 passed, 1 xdist worker crash in test_voice_recordings.py (passes 3x
-  alone). Needs user verification after deploy: one person asks for the
+  Scope). Commits f71ad58, 7731f57 (opentelemetry-api CVE); v3.19.3.
+  Passed: tests/test_turn_scope.py (19), TestSpeakerChangeScope + peek
+  tests in test_voice_orchestrator.py (2 of 3 scope tests fail with the
+  filter disabled); full gate scripts/ci.py (container 5739, coverage
+  87.00%, bridge 337, docker, trivy). Needs user verification after
+  deploying 3.19.3: one person asks for the
   fan, the other says "Küche einschalten" on the same satellite within
   30 min -> light-agent, trace shows a `turn_scope` span with
   `dropped_turns`; same person after more than 2 min -> span

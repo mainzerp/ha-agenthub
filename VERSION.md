@@ -1,12 +1,23 @@
 # Version
 
-**Current Version:** 3.19.2
+**Current Version:** 3.19.3
 
 ## Recent Changes
 
-(tracking changes since 3.19.2)
+(tracking changes since 3.19.3)
 
 ## Version History
+
+### 3.19.3 (PATCH) -- another speaker's turns no longer steer routing
+
+(commits f71ad58, 7731f57; issue #236)
+
+- Fix (orchestrator): on a shared satellite Home Assistant reuses the conversation id for minutes and across household members. A room-only command ("Küche einschalten") was routed to climate-agent as a fan request, because the history held another person's fan requests plus the hint "the previous turn was handled by climate-agent". Stored turns now carry their time and the identified voice speaker. When the current speaker is identified and differs from the speaker of the last turn, that other speaker's exchanges, the recently-used-entity hints and an open clarifying question addressed to them are dropped before classification and dispatch (`turn_scope` trace span). Turns without an identified speaker are kept.
+- Fix (orchestrator): the current request has priority over the history. The previous-agent routing hint is given only when the newest turn is at most 120 s old or a clarifying question is open; older history is sent as background only (`history_fresh` on the `classify.conversation_turns` span). RULE 3 of the classifier prompt classifies a self-contained message (action plus device, room or area) on its own and never adds a device or topic from earlier turns.
+- Fix (deps): `opentelemetry-api>=1.45.2` (via fastapi and mcp; CVE-2026-126360), lock resolves 1.45.2.
+- Docs: architecture section Conversation History Scope; drift fixes (speaker turns and the cache, approval answers resolve the voice follow-up).
+- Upgrade: no migration.
+- Verification: 24 new tests (turn scope, conversation stamps, classifier freshness, speaker peek, orchestrator speaker change; scope tests fail with the filter disabled); full gate `scripts/ci.py` (Ruff, self-docs and card sync, lock check, container suite 5739 passed with coverage 87.00%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test, trivy). Not verified: a real speaker change on the live instance.
 
 ### 3.19.2 (PATCH) -- voice turns of a recognized speaker are cached again
 
