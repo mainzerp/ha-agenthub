@@ -1,12 +1,20 @@
 # Version
 
-**Current Version:** 3.19.3
+**Current Version:** 3.19.4
 
 ## Recent Changes
 
-(tracking changes since 3.19.3)
+(tracking changes since 3.19.4)
 
 ## Version History
+
+### 3.19.4 (PATCH) -- the integration loads on Home Assistant cores without voluptuous_openapi
+
+(commit 25bd24f)
+
+- Fix (integration): Home Assistant replaced voluptuous with probatio and no longer ships `voluptuous_openapi`. Setting up the config entry failed with `ModuleNotFoundError: No module named 'voluptuous_openapi'` while loading the AI Task platform. The bridge now uses `probatio.to_openapi` for AI Task structures and `probatio` schemas in the config flow and the activity WebSocket command, and falls back to `voluptuous`/`voluptuous_openapi` on older cores (minimum stays 2025.8.0).
+- Upgrade: update the integration through HACS and restart Home Assistant; no container change, no migration.
+- Verification: bridge suite 337 passed with `probatio` mocked; `probatio` 0.13.0 checked directly (`Schema`, `Required`, `Optional` with defaults, `to_openapi` with `custom_serializer`); full gate `scripts/ci.py` (Ruff, self-docs and card sync, lock check, container suite 5739 passed with coverage 87.00%, bridge suite 337 passed, bandit, pip-audit, docker build and smoke test); its Trivy step timed out in the secret scanner and was rerun as `trivy image --scanners vuln --timeout 20m` with 0 HIGH/CRITICAL findings. Not verified: setup on a real Home Assistant core with probatio.
 
 ### 3.19.3 (PATCH) -- another speaker's turns no longer steer routing
 
