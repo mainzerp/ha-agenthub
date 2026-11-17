@@ -8,7 +8,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -47,6 +46,13 @@ from .const import (
     resolve_ws_receive_timeout,
     stt_unique_id,
 )
+
+# Home Assistant replaced voluptuous with probatio (same public API); older cores
+# only ship voluptuous.
+try:
+    import probatio as vol
+except ImportError:  # pragma: no cover - depends on the Home Assistant core version
+    import voluptuous as vol
 
 logger = logging.getLogger(__name__)
 

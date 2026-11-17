@@ -327,7 +327,7 @@ def _mock_selector_serializer(schema):
     return {"selector_serializer": True}
 
 
-def _mock_voluptuous_openapi_convert(schema, *, custom_serializer=None):
+def _mock_schema_to_openapi(schema, *, custom_serializer=None):
     return {"converted": schema, "custom_serializer": custom_serializer}
 
 
@@ -451,7 +451,13 @@ def _mock_homeassistant_deps():
         "homeassistant.helpers.entity_platform": {
             "AddConfigEntryEntitiesCallback": _MockAddConfigEntryEntitiesCallback,
         },
-        "voluptuous_openapi": {"convert": _mock_voluptuous_openapi_convert},
+        "probatio": {
+            "to_openapi": _mock_schema_to_openapi,
+            "Schema": MagicMock,
+            "Required": MagicMock,
+            "Optional": MagicMock,
+        },
+        "voluptuous_openapi": {"convert": _mock_schema_to_openapi},
         "voluptuous": {
             "Schema": MagicMock,
             "Required": MagicMock,

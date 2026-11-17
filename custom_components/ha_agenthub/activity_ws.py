@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
@@ -29,6 +28,13 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
     from .activity import ActivityRelay
+
+# Home Assistant replaced voluptuous with probatio (same public API); older cores
+# only ship voluptuous.
+try:
+    import probatio as vol
+except ImportError:  # pragma: no cover - depends on the Home Assistant core version
+    import voluptuous as vol
 
 logger = logging.getLogger(__name__)
 

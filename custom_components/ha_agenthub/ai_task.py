@@ -16,7 +16,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from voluptuous_openapi import convert
 
 from . import AgentHubConfigEntry, async_report_auth_failure, async_report_auth_ok
 from .client import (
@@ -26,6 +25,13 @@ from .client import (
     async_post_json,
 )
 from .const import DOMAIN
+
+# Home Assistant replaced voluptuous with probatio and no longer ships
+# voluptuous_openapi; older cores only have voluptuous_openapi.
+try:
+    from probatio import to_openapi as _schema_to_openapi
+except ImportError:  # pragma: no cover - depends on the Home Assistant core version
+    from voluptuous_openapi import convert as _schema_to_openapi
 
 logger = logging.getLogger(__name__)
 
@@ -226,11 +232,11 @@ class HaAgentHubAITaskEntity(ai_task.AITaskEntity):
     def _convert_structure(
         structure: Any, chat_log: conversation.ChatLog
     ) -> dict[str, Any] | None:
-        """Convert the task's voluptuous structure to a JSON schema."""
+        """Convert the task's structure schema to a JSON schema."""
         if structure is None:
             return None
         llm_api = getattr(chat_log, "llm_api", None)
-        return convert(
+        return _schema_to_openapi(
             structure,
             custom_serializer=(
                 llm_api.custom_serializer if llm_api else llm.selector_serializer
