@@ -1,7 +1,7 @@
 # agent-assist core dependencies
 
 # Web framework
-fastapi==0.143.3
+fastapi==0.162.4
 uvicorn[standard]==0.54.0
 
 # LLM integration
