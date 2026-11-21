@@ -48,11 +48,11 @@ Live pipeline in board format — headings are columns, cards are
   not personality-mediated (`verify_unconfirmed`, return span
   `mediation_skipped`). Change: mediate.txt, merge.txt, mediation.py,
   orchestrator.py, pipeline_strategies.py, task_pipeline.py, actionable.py.
-  Not committed (working tree on main). Passed: new regression tests in
+  Commit 34836f7; v3.20.0. Passed: new regression tests in
   test_orchestrator.py, test_orchestrator_streaming.py,
   test_orchestrator_followups.py (8 fail on old code); full gate
   `scripts/ci.py --skip-docker` (container 5892, coverage 87.10%, bridge
-  337). Needs user check after deploy: "Timer auf zwölf Minuten" gets no
+  337). Needs user check after deploying 3.20.0: "Timer auf zwölf Minuten" gets no
   question; "Pause" on a non-responding player is not reported as done.
 - Entity recall misses and pollution (#238) · priority: P1 · area: entity-resolution
   Outcome: previous user turn only while a question is pending (anaphora
@@ -60,7 +60,7 @@ Live pipeline in board format — headings are columns, cards are
   rapidfuzz); config/diagnostic and outranked unavailable entities dropped;
   single-digit id tokens ignored; HA registry aliases ingested via
   `config/entity_registry/get_entries`; exact-name prompt hint (LLM still
-  picks). Not committed. Passed: test_actionable_keyword_recall.py (31),
+  picks). Commit ab23926; v3.20.0. Passed: test_actionable_keyword_recall.py (31),
   tests/unit/ha_client/test_entity_registry_aliases.py; full gate as above.
   Needs user check: "Estisch einschalten" right after an Ambiente command
   switches light.esstisch; "Gelande einschalten" works via the HA alias;
@@ -69,28 +69,27 @@ Live pipeline in board format — headings are columns, cards are
 - State verification waits for unreachable states (#239) · priority: P2 · area: agents
   Outcome: pause/stop on an idle/off/standby player is sent without a wait
   ("Nothing is playing on X"); `idle` after a pause from `playing` counts as
-  reached; unavailable lights are not called. Not committed. Passed:
+  reached; unavailable lights are not called. Commit 8391de3; v3.20.0. Passed:
   test_state_verification_unavailable_idle.py (new); full gate as above.
   Needs user check: "Pause" on an idle Echo answers in under 2 s; trace
   `ha_action` shows no 2.5 s wait.
 - ai_task never returns a clarifying question (#240) · priority: P2 · area: orchestrator
   Outcome: stateless-task classifier hint; a single-agent clarification is
   re-dispatched once to general-agent (span
-  `stateless_clarification_redispatch`). Not committed. Passed: 7 new tests
+  `stateless_clarification_redispatch`). Commit eecbb10; v3.20.0. Passed: 7 new tests
   in test_ai_task.py; full gate as above. Needs user check: the TV
   automation never speaks a question over the next days (trace filter
   source `ai_task`).
 - Retry time visible in LLM provider spans (#241) · priority: P3 · area: llm
   Outcome: `attempts`, `backoff_ms`, `total_ms`, `usage_track_ms`, `error`
   on every `llm_provider_call`; OpenAI SDK retries off (`max_retries=0`).
-  Not committed. Passed: TestSpanTimingMetadata (9); full gate as above.
+  Commit ee1d683; v3.20.0. Passed: TestSpanTimingMetadata (9); full gate as above.
   Needs user check: next slow trace shows where `total_ms` minus
   `latency_ms` went.
 - Wake-word-only turns, filler check, search cap (#242) · priority: P3 · area: orchestrator
   Outcome: bare configured wake word finalized as noise without LLM
   (`noise_reason: wake_word_only`); fillers over 15 words, multi-sentence or
-  label-prefixed are dropped; general prompt caps web searches at two. Not
-  committed. Passed: test_wake_word.py, test_noise_route.py,
+  label-prefixed are dropped; general prompt caps web searches at two. Commit 55982c9; v3.20.0. Passed: test_wake_word.py, test_noise_route.py,
   test_filler*.py; full gate as above. Needs user check: "Alexa" alone
   shows no classify span; no "Kurze Antwort:" fillers.
 
