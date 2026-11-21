@@ -1,12 +1,27 @@
 # Version
 
-**Current Version:** 3.19.4
+**Current Version:** 3.20.0
 
 ## Recent Changes
 
-(tracking changes since 3.19.4)
+(tracking changes since 3.20.0)
 
 ## Version History
+
+### 3.20.0 (MINOR) -- truthful replies, better device recall, no LLM call for a bare wake word
+
+(commits 8391de3, ee1d683, 34836f7, eecbb10, ab23926, 55982c9, 28322a6, b18bac0; issues #237-#242; from a review of 105 live requests 2026-11-14 to 20)
+
+- Fix (orchestrator, #237): the personality mediation no longer invents follow-up questions or offers. A mediated or merged `[FOLLOWUP]` counts only when an organic follow-up was rolled; before, "Timer auf zwölf Minuten" got an invented question and the answer "Ja" started a second timer. Results with an unverified action are localized instead of personality-mediated, so "not confirmed yet" is no longer spoken as done; prompts keep hedges and speak in the first person.
+- Fix (entity, #238): keyword recall uses the previous user turn only while a question is pending ("Estisch einschalten" after an Ambiente command recalled only Ambiente lights); a fuzzy name-hit class recovers speech-to-text misspellings (>= 6 characters, rapidfuzz ratio >= 0.85); config/diagnostic entities and outranked unavailable entities (a satellite LED ring) leave the candidate list; single-digit entity_id tokens give no identity hits; HA voice aliases are read from the entity registry (`config/entity_registry/get_entries`); a single exact name match gets a prompt hint (the LLM still picks).
+- Fix (agents, #239): pause or stop on an idle, off or standby player is sent without waiting for an unreachable state ("Nothing is playing on X"); idle after a pause from playing counts as reached; unavailable lights are not called and the reply says so.
+- Fix (orchestrator, #240): an `ai_task` from an automation gets a classifier context hint, and a domain agent's clarifying question is re-dispatched once to the general agent instead of becoming the automation's text.
+- Feature (llm, #241): `llm_provider_call` spans record `attempts`, `backoff_ms`, `total_ms`, `usage_track_ms` and `error` (`timeout`/`empty`). LiteLLM calls pass `max_retries=0`, so the OpenAI SDK no longer retries up to twice on its own past the turn deadline.
+- Feature (orchestrator, #242): a transcript that is only the configured wake word is finalized as noise without the classifier LLM call (`noise_reason: wake_word_only`); fillers over 15 words, with several sentences or a label prefix are dropped; the general agent uses at most two web searches per request.
+- Fix (voice): upstream re-uploaded the speaker model on 2026-11-19 (only the ONNX `producer_version` header changed, weights identical), which broke the image build and the runtime download checksum; the pinned SHA-256 and size are updated. Stored voice profiles stay valid.
+- Docs: drift fixes in api-reference, architecture, troubleshooting and user-guide (HA aliases are read now).
+- Upgrade: no migration. Entity `entity_category` and HA aliases arrive with the next entity-index sync.
+- Verification: new regression tests per issue (mediation guard, recall, state verification, ai_task re-dispatch, span timing, wake word, filler); full gate `scripts/ci.py` (see release notes). Not verified: behaviour on the live instance.
 
 ### 3.19.4 (PATCH) -- the integration loads on Home Assistant cores without voluptuous_openapi
 
