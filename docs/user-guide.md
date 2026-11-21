@@ -190,7 +190,7 @@ The **Entity Index** page at `/dashboard/entity-index` shows how Home Assistant 
 
 Where the rest lives:
 
-- **Aliases** -- the page does not edit aliases. Matching uses the optional user file `/data/entity_aliases.yaml`; an alias that equals the phrase is an exact match. Note: aliases set in Home Assistant are not read by AgentHub yet (planned fix); aliases in `/data/entity_aliases.yaml` are used when an agent resolves a free-form name, but not yet when it builds its candidate list.
+- **Aliases** -- the page does not edit aliases. Matching uses the optional user file `/data/entity_aliases.yaml`; an alias that equals the phrase is an exact match. Aliases set in Home Assistant (entity settings > Voice assistants > Aliases) are read from the entity registry and count like the friendly name when an agent builds its candidate list; aliases in `/data/entity_aliases.yaml` are used only when an agent resolves a free-form name.
 - **Matching signal weights** -- Levenshtein, Jaro-Winkler, phonetic and alias weights are under **Settings > Entity Matching**.
 - **Per-agent visibility rules** -- the dashboard shows each agent's rules as badges on the **Agents** page and in Match Preview but cannot edit them. Rules are read only through `GET` and replaced as a whole list only through `PUT /api/admin/entity-visibility/{agent_id}` (see the [API reference](api-reference.md)).
 
@@ -386,7 +386,7 @@ These short procedures link the dashboard pages described above.
    - Open the request link, select a span in the timeline, and inspect its timing and diagnostic payloads.
 
 4. **Add an alias for a device**
-   - Add the alias to `/data/entity_aliases.yaml`. Aliases set in Home Assistant are not read by AgentHub yet.
+   - Add the alias in Home Assistant (entity settings > Voice assistants > Aliases). Aliases in `/data/entity_aliases.yaml` only help when an agent resolves a free-form name.
    - Click **Refresh from HA** on **Entity Index** (`/dashboard/entity-index`).
    - Use Match Preview to check the match and test the command in **Chat**.
 

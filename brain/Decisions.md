@@ -4,6 +4,21 @@ Decision rationale, so decisions stay made. Newest first. Binding architecture
 rules live in `docs/project/prime-directives.md` — this file records choices,
 not copies of rules.
 
+## 2026-11-21 — orchestrator: wake-word-only turns skip classification; exact names stay an LLM pick
+
+- **A turn whose text is nothing but a configured wake word plus
+  punctuation is finalized as noise without the orchestrator LLM call
+  (#242).** This is input validation (nothing left to classify), not keyword
+  routing, so Directives 11 and 12 do not apply. Rationale: live 2026-11-14
+  to 20, 17 of 90 voice turns were bare wake words, each paying 0.4-1.9 s
+  for a `noise` verdict. Rejected: matching wake-word variants or other
+  phrases deterministically (that would be a keyword table).
+- **An exact friendly-name match in recall does not bypass the agent LLM
+  pick (#238).** The agent prompt gets a stronger hint naming the exact
+  match; the LLM still selects. Rationale: owner decision 2026-11-21; keeps
+  one selection path. Leaves the open Directive 4 card unresolved for the
+  deterministic-first question.
+
 ## 2026-11-13 — cache: an identified voice speaker no longer blocks caching
 
 - **A turn with a voice-identified speaker is not context-dependent.** It

@@ -319,12 +319,16 @@ Server side: `container/app/api/routes/voice.py`, `container/app/voice/`
 Run one Home Assistant `ai_task.generate_data` call (the HA bridge's AI-task
 entity) as a non-streaming orchestrator turn with request source `ai_task`.
 Classification, routing and device actions work as for a conversation turn,
-so a task may switch devices; the classifier is told the message is an
-automation task, so a task that merely mentions a device is not routed to a
-device agent. A clarifying question from a domain agent is never returned as
-the result: the task is re-dispatched once to the general agent and its
-answer is returned (`routed_agent` is then `general-agent`). Flow and exemptions: [Architecture -- AI task
-flow](architecture.md#ai-task-flow).
+so a task may switch devices. The classifier gets a context hint that the
+message is an automation task expecting a text result (an LLM hint, not a
+routing rule). When a single-agent turn ends in a domain agent's clarifying
+question (`voice_followup` set, no error, no executed action), the task is
+re-dispatched once to the general agent and its answer is returned
+(`routed_agent` is then `general-agent`; trace span
+`stateless_clarification_redispatch` with `from_agent` and `redispatch_ok`).
+If that re-dispatch fails or returns no speech, the original question is
+returned. Multi-intent and sequential-send turns are not re-dispatched. Flow
+and exemptions: [Architecture -- AI task flow](architecture.md#ai-task-flow).
 
 **Auth:** Bearer token. Per-IP rate limit shared with `/api/conversation`
 (30/minute, `429`). Total request cap: 48 MiB (50,331,648 bytes) of JSON
@@ -1575,8 +1579,8 @@ pattern): `user_id`, `speaker_ha_user_id`, `search_user_id`, `conversation_id`,
 Error and retry metadata (added keys only; the payload shape is unchanged):
 
 - A span that exited with an exception has `status: "error"` and metadata `error_type` (top-level package plus class, e.g. `litellm.RateLimitError`; builtins bare, e.g. `TimeoutError`), `error_message` (single line, secret-redacted and trace-sanitized, max 300 characters, omitted when empty) and `error_status` (integer HTTP status, only when the exception carries one). Keys the caller already set are not overwritten. Cache rewrite-failure spans do not carry these keys yet.
-- Every `llm_provider_call` span (streamed or not, tool rounds included) carries `attempts` (provider attempts inside the span, at least 1), `backoff_ms` (time slept between those attempts) and `total_ms` (wall time of the whole span: failed attempts, backoff and the usage-record write; for streams also the time the consumer holds the generator). `latency_ms` stays the successful attempt only, so `total_ms` minus `latency_ms` is the time spent elsewhere in the span; non-streaming spans record the usage-write share as `usage_track_ms`. A span that retried a transient provider error also carries `retry_count` (retries made) and `retried_error` (`ClassName(status)`, e.g. `RateLimitError(429)`).
-- A provider timeout that exits a span sets `error: "timeout"` on it; an empty completion sets `error: "empty"` on the span that produced it. The follow-up span of the single timeout/empty-response retry carries `retry` (`"timeout"` / `true`) and `retry_delay_ms` (the pause between the two spans); its own `attempts`/`backoff_ms`/`total_ms` cover only its own work.
+- Every `llm_provider_call` span (streamed or not, tool rounds included) carries `attempts` (provider attempts inside the span, at least 1), `backoff_ms` (time slept between those attempts) and `total_ms` (wall time of the whole span: failed attempts, backoff and the usage-record write; for streams also the time the consumer holds the generator). `latency_ms` stays the successful attempt only, so `total_ms` minus `latency_ms` is the time spent elsewhere in the span; a span that recorded token usage carries the usage-write share as `usage_track_ms`. A span that retried a transient provider error also carries `retry_count` (retries made) and `retried_error` (`ClassName(status)`, e.g. `RateLimitError(429)`).
+- A provider timeout that exits a span sets `error: "timeout"` on it; when the first `complete()` attempt returns an empty completion, its span gets `error: "empty"` (an empty retry raises instead; tool and streaming paths do not tag empty output). The follow-up span of the single timeout/empty-response retry carries `retry` (`"timeout"` / `true`) and `retry_delay_ms` (the pause between the two spans); its own `attempts`/`backoff_ms`/`total_ms` cover only its own work.
 
 ---
 
