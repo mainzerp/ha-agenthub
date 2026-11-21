@@ -200,7 +200,22 @@ AI-task entity (`ai_task.generate_data`). The trace source is `ai_task`
    sanitized with an 8500-character bound instead of the 500-character turn
    limit and dispatched as a non-streaming `message/send` turn with source
    `ai_task`: normal classification, routing and device actions (devices
-   may be switched). Source `ai_task` (`STATELESS_TASK_SOURCES`) skips the
+   may be switched). The classifier prompt carries a context line for
+   stateless sources (`STATELESS_TASK_HINT`, slot `{task_source_hint}` of
+   `orchestrator.txt`, passed as `stateless_task` to
+   `ClassificationEngine.classify`): the message is an automation task that
+   expects a text result, to be routed to a device agent only when it asks
+   to act on or read a device, not merely because it mentions one. It is a
+   context line, not a rule table; the LLM still decides. The hint cannot
+   leak into the routing cache because these turns never read or write it.
+   A domain agent that answers with a clarifying question (its result sets
+   `voice_followup`, no successful action, not an error) cannot be answered
+   by an automation: `DefaultDispatchStrategy` re-dispatches the original
+   task text once to the general agent through the normal A2A dispatch and
+   returns that answer as the result (`routed_to` is `general-agent`). The
+   `stateless_clarification_redispatch` span records the original agent
+   (`from_agent`); a general-agent turn is never re-dispatched (no loop).
+   Source `ai_task` (`STATELESS_TASK_SOURCES`) skips the
    action/routing cache read and write, filler, voice follow-up,
    personality mediation, calendar reminder injection, the organic closing
    question, pending clarifying questions (neither consumed nor set) and

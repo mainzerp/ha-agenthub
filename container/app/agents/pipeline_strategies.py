@@ -22,7 +22,7 @@ from app.agents.personalization import mediation_speaker_kwargs, personalization
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
 from app.cache.cache_manager import CacheManager
-from app.models.agent import IngressTask, source_is_stateless_task
+from app.models.agent import FALLBACK_AGENT, IngressTask, source_is_stateless_task
 
 __all__ = [
     "CacheReplayStrategy",
@@ -269,6 +269,7 @@ class DefaultClassificationStrategy(ClassificationStrategy):
                     get_turns=self._get_turns,
                     prefetched_turns=prefetched_turns,
                     pending_question=pending_question,
+                    stateless_task=source_is_stateless_task(task.context.source if task.context else None),
                 )
                 target_agent, condensed_task, confidence = classifications[0]
                 self._pipeline_record_classify_span(
@@ -295,6 +296,71 @@ class DefaultDispatchStrategy(DispatchStrategy):
     ) -> None:
         self._dispatch_manager = dispatch_manager
         self._handle_sequential_send = handle_sequential_send
+
+    @staticmethod
+    def _needs_stateless_clarification_redispatch(
+        task: IngressTask,
+        agent_id: str,
+        result: dict[str, Any] | None,
+        *,
+        action_executed: Any,
+        has_error: bool,
+    ) -> bool:
+        """True when a stateless task turn ended in a domain agent's clarifying question.
+
+        Decided from structured result signals only: the agent requested a
+        voice follow-up (its clarifying-question / ambiguity flag), no
+        successful action ran, and the answering agent is not already the
+        fallback agent (so the redispatch can never loop).
+        """
+        if not source_is_stateless_task(task.context.source if task.context else None):
+            return False
+        if agent_id == FALLBACK_AGENT or has_error or not (result or {}).get("voice_followup"):
+            return False
+        return not (isinstance(action_executed, dict) and action_executed.get("success"))
+
+    async def _redispatch_stateless_clarification(
+        self,
+        task: IngressTask,
+        from_agent: str,
+        user_text: str,
+        conversation_id: str,
+        turns: list[dict[str, Any]],
+        span_collector,
+        language: str,
+        incoming_context,
+    ) -> tuple[str, str, dict[str, Any] | None] | None:
+        """Re-dispatch the original task text once to general-agent (through the A2A dispatch path).
+
+        An automation cannot answer a clarifying question: its result text is
+        consumed as-is, so the domain agent's question would become the
+        automation output. Returns ``None`` (keep the original result) when
+        the redispatch fails or yields no speech.
+        """
+        from app.analytics.tracer import _optional_span
+
+        async with _optional_span(
+            span_collector, "stateless_clarification_redispatch", agent_id=FALLBACK_AGENT
+        ) as span:
+            span["metadata"]["from_agent"] = from_agent
+            span["metadata"]["stateless_clarification_redispatch"] = from_agent
+            agent_id, speech, result = await self._dispatch_manager.dispatch_single(
+                FALLBACK_AGENT,
+                user_text,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
+                incoming_context=incoming_context,
+                resolved_language=language,
+            )
+            error = (result or {}).get("error")
+            span["metadata"]["redispatch_ok"] = bool(speech) and not error
+            if not speech or error:
+                logger.warning("Stateless clarification redispatch from %s did not produce a result", from_agent)
+                return None
+        logger.info("Stateless task clarification from %s re-dispatched to %s", from_agent, FALLBACK_AGENT)
+        return agent_id, speech, result
 
     async def execute(
         self,
@@ -363,6 +429,27 @@ class DefaultDispatchStrategy(DispatchStrategy):
             agent_error = (result or {}).get("error")
             has_error = agent_error is not None
             agent_voice_followup = bool((result or {}).get("voice_followup"))
+            if self._needs_stateless_clarification_redispatch(
+                task, agent_id, result, action_executed=action_executed, has_error=has_error
+            ):
+                redispatched = await self._redispatch_stateless_clarification(
+                    task,
+                    agent_id,
+                    user_text,
+                    conversation_id,
+                    turns,
+                    span_collector,
+                    language,
+                    incoming_context,
+                )
+                if redispatched is not None:
+                    routed_to, speech, result = redispatched
+                    action_executed = (result or {}).get("action_executed")
+                    directive = (result or {}).get("directive")
+                    directive_reason = (result or {}).get("reason")
+                    agent_error = (result or {}).get("error")
+                    has_error = agent_error is not None
+                    agent_voice_followup = bool((result or {}).get("voice_followup"))
             return DispatchResult(
                 classifications=classifications,
                 target_agent=target_agent,

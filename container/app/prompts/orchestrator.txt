@@ -24,6 +24,10 @@ Do not output explanations.
 {followup_hint}
 --- END FOLLOW-UP HINT ---
 
+--- TASK SOURCE HINT ---
+{task_source_hint}
+--- END TASK SOURCE HINT ---
+
 ==========================
 1. OUTPUT FORMAT (HARD CONTRACT)
 ==========================

@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 # question and must go to the agent that asked it (follow-up pinning).
 ANSWER_MARKER = "[ANSWER]"
 
+# Context line for stateless-task sources (``/api/ai_task``): a context fact for
+# the classifier LLM, not a routing rule. Device actions from a task still route
+# to the device agents; the LLM decides.
+STATELESS_TASK_HINT = (
+    "This message is a task sent by an automation, not typed by a person, and the automation expects a text "
+    "result. Route it to a device agent only when the task asks to act on a device or read a device's state, "
+    "not merely because it mentions a device, a room or a media activity as the subject of the text to write."
+)
+
 # Agents a pending question can never be pinned to: pseudo-agents and the
 # delivery-only send-agent (it needs a content partner).
 _UNPINNABLE_AGENTS = frozenset({CANCEL_INTERACTION_AGENT, NOISE_AGENT, "send-agent"})
@@ -242,6 +251,7 @@ class ClassificationEngine:
         get_turns: Callable[[str | None], Awaitable[list[dict[str, Any]]]] | None = None,
         prefetched_turns: list[dict[str, Any]] | None = None,
         pending_question: str | None = None,
+        stateless_task: bool = False,
     ) -> tuple[list[tuple[str, str, float | None]], bool]:
         """Classify user intent and produce a condensed task.
 
@@ -256,6 +266,10 @@ class ClassificationEngine:
             prefetched_turns: P3 -- conversation turns already fetched by the
                 pipeline prelude; when given, the duplicate ``get_turns``
                 fetch is skipped.
+            stateless_task: the turn is a stateless programmatic task
+                (``source_is_stateless_task``); the classifier prompt then
+                carries :data:`STATELESS_TASK_HINT`. Such turns never read or
+                write the routing cache, so the hint cannot leak into it.
 
         Returns:
             (classifications, routing_cached) where classifications is a list
@@ -411,6 +425,11 @@ class ClassificationEngine:
                         "classify those normally."
                     )
             messages[0]["content"] = messages[0]["content"].replace("{followup_hint}", followup_hint)
+            task_source_hint = STATELESS_TASK_HINT if stateless_task else ""
+            if "{task_source_hint}" in messages[0]["content"]:
+                messages[0]["content"] = messages[0]["content"].replace("{task_source_hint}", task_source_hint)
+            elif task_source_hint:
+                messages[0]["content"] += "\n\n" + task_source_hint
             if turns:
                 self._append_conversation_turn_messages(messages, turns, max_content_length=300)
             subspan["span_name"] = "classify.conversation_turns"

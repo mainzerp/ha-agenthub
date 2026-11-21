@@ -3772,6 +3772,7 @@ class OrchestratorAgent(BaseAgent):
         span_collector=None,
         language: str = "en",
         allow_cache_lookup: bool = True,
+        stateless_task: bool = False,
     ) -> tuple[list[tuple[str, str, float | None]], bool]:
         return await self._classification_engine.classify(
             user_text,
@@ -3783,6 +3784,7 @@ class OrchestratorAgent(BaseAgent):
             call_llm=self._call_llm,
             load_prompt_async=self._load_prompt_async,
             get_turns=self._get_turns,
+            stateless_task=stateless_task,
         )
 
     async def _parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float | None]]:

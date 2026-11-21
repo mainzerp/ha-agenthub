@@ -18,6 +18,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from app.agents.classification_engine import STATELESS_TASK_HINT
 from app.agents.orchestrator import OrchestratorAgent
 from app.models.agent import (
     INTERNAL_ONLY_AGENTS,
@@ -751,6 +752,126 @@ class TestAiTaskOrchestrator:
         calendar.inject_reminders.assert_awaited()
         assert "task_text" not in result
         self.conversation_repo.insert.assert_awaited()
+
+    @staticmethod
+    def _classifier_system_prompts(mock_complete: AsyncMock) -> list[str]:
+        prompts = []
+        for call in mock_complete.await_args_list:
+            for arg in [*call.args, *call.kwargs.values()]:
+                if isinstance(arg, list) and arg and isinstance(arg[0], dict) and arg[0].get("role") == "system":
+                    prompts.append(str(arg[0]["content"]))
+        return prompts
+
+    async def _run_with_dispatch_sequence(
+        self, source: str, dispatch_results: list[dict[str, Any]], classification: str, text: str
+    ):
+        orch, dispatcher, *_ = self._make_orchestrator(dispatch_results[0])
+        dispatcher.dispatch = AsyncMock(side_effect=dispatch_results)
+        context = TaskContext(source=source, language="en", user_id="user-1")
+        task = make_ingress_task(description=text, conversation_id="conv-1", context=context)
+        with (
+            patch("app.agents.orchestrator.SettingsRepository") as mock_settings,
+            patch("app.agents.orchestrator.track_request", new_callable=AsyncMock),
+            patch("app.llm.client.complete", new_callable=AsyncMock) as mock_complete,
+            patch.object(orch, "_get_personality_cached", new=AsyncMock(return_value="")),
+        ):
+            mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+            mock_complete.side_effect = [classification, "Which?", "Which?"]
+            result = await orch.handle_task(task)
+        return result, dispatcher
+
+    async def test_classifier_gets_task_hint_only_for_stateless_source(self) -> None:
+        dispatch_result = {"speech": "Done.", "action_executed": None}
+        *_, ai_complete = await self._run(
+            "ai_task", dispatch_result, "general-agent (90%): write a sarcastic line", "write a sarcastic line"
+        )
+        *_, api_complete = await self._run(
+            "api", dispatch_result, "general-agent (90%): write a sarcastic line", "write a sarcastic line"
+        )
+        ai_prompt = self._classifier_system_prompts(ai_complete)[0]
+        api_prompt = self._classifier_system_prompts(api_complete)[0]
+        assert STATELESS_TASK_HINT in ai_prompt
+        assert STATELESS_TASK_HINT not in api_prompt
+        assert "{task_source_hint}" not in ai_prompt
+        assert "{task_source_hint}" not in api_prompt
+
+    async def test_domain_clarification_redispatches_once_to_general_agent(self) -> None:
+        question = {"speech": "Which TV do you mean?", "voice_followup": True, "action_executed": None}
+        answer = {"speech": "Oh, the TV is on again. Shocking.", "action_executed": None}
+        text = "Comment sarcastically that the TV was switched on again."
+        result, dispatcher = await self._run_with_dispatch_sequence(
+            "ai_task", [question, answer], f"light-agent (95%): {text}", text
+        )
+        assert dispatcher.dispatch.await_count == 2
+        first, second = (call.args[0] for call in dispatcher.dispatch.await_args_list)
+        assert first.params["agent_id"] == "light-agent"
+        assert second.params["agent_id"] == "general-agent"
+        assert second.params["task"].description == text
+        assert second.params["task"].context.source == "ai_task"
+        assert result["task_text"] == "Oh, the TV is on again. Shocking."
+        assert result["routed_to"] == "general-agent"
+        assert result["voice_followup"] is False
+
+    async def test_redispatch_is_traced_with_original_agent(self) -> None:
+        from app.agents.pipeline_strategies import DefaultDispatchStrategy
+        from app.analytics.tracer import SpanCollector
+
+        dispatch_manager = AsyncMock()
+        dispatch_manager.dispatch_single = AsyncMock(
+            side_effect=[
+                ("music-agent", "Which one?", {"speech": "Which one?", "voice_followup": True}),
+                ("general-agent", "A quip.", {"speech": "A quip."}),
+            ]
+        )
+        strategy = DefaultDispatchStrategy(dispatch_manager=dispatch_manager)
+        collector = SpanCollector("trace-1")
+        task = make_ingress_task("quip about music", context=TaskContext(source="ai_task"))
+        result = await strategy.execute(
+            task,
+            [("music-agent", "quip about music", 0.9)],
+            "quip about music",
+            "conv-1",
+            [],
+            collector,
+            "en",
+            task.context,
+        )
+        spans = [s for s in collector.get_spans() if s["span_name"] == "stateless_clarification_redispatch"]
+        assert len(spans) == 1
+        assert spans[0]["metadata"]["stateless_clarification_redispatch"] == "music-agent"
+        assert result.target_agent == "music-agent"
+        assert result.routed_to == "general-agent"
+        assert result.speech == "A quip."
+
+    async def test_redispatch_never_loops_when_general_agent_asks(self) -> None:
+        question = {"speech": "Which TV?", "voice_followup": True, "action_executed": None}
+        result, dispatcher = await self._run_with_dispatch_sequence(
+            "ai_task", [question, question], "light-agent (95%): quip", "quip"
+        )
+        # domain agent once, general-agent once, no third dispatch
+        assert dispatcher.dispatch.await_count == 2
+        assert result["task_text"] == "Which TV?"
+
+    async def test_successful_device_action_is_not_redispatched(self) -> None:
+        done = {
+            "speech": "The light is on.",
+            "voice_followup": False,
+            "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        }
+        result, dispatcher = await self._run_with_dispatch_sequence(
+            "ai_task", [done], "light-agent (95%): turn on the light", "turn on the light"
+        )
+        assert dispatcher.dispatch.await_count == 1
+        assert result["task_text"] == "The light is on."
+        assert result["routed_to"] == "light-agent"
+
+    async def test_conversation_turn_clarification_is_not_redispatched(self) -> None:
+        question = {"speech": "Which light do you mean?", "voice_followup": True, "action_executed": None}
+        result, dispatcher = await self._run_with_dispatch_sequence(
+            "api", [question], "light-agent (95%): turn on the light", "turn on the light"
+        )
+        assert dispatcher.dispatch.await_count == 1
+        assert result["routed_to"] == "light-agent"
 
     async def test_ai_task_multi_agent_joins_results_without_merge_llm(self) -> None:
         dispatch_result = {"speech": "Done.", "action_executed": None}

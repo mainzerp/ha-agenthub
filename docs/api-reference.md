@@ -319,7 +319,11 @@ Server side: `container/app/api/routes/voice.py`, `container/app/voice/`
 Run one Home Assistant `ai_task.generate_data` call (the HA bridge's AI-task
 entity) as a non-streaming orchestrator turn with request source `ai_task`.
 Classification, routing and device actions work as for a conversation turn,
-so a task may switch devices. Flow and exemptions: [Architecture -- AI task
+so a task may switch devices; the classifier is told the message is an
+automation task, so a task that merely mentions a device is not routed to a
+device agent. A clarifying question from a domain agent is never returned as
+the result: the task is re-dispatched once to the general agent and its
+answer is returned (`routed_agent` is then `general-agent`). Flow and exemptions: [Architecture -- AI task
 flow](architecture.md#ai-task-flow).
 
 **Auth:** Bearer token. Per-IP rate limit shared with `/api/conversation`
