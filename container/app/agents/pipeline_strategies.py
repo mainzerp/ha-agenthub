@@ -17,7 +17,7 @@ from app.agents.compound_utterance import looks_compound
 from app.agents.conversation_manager import ConversationManager, extract_resolved_entities
 from app.agents.dispatch_manager import DispatchManager, canned_error_code
 from app.agents.followup import resolve_voice_followup
-from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of
+from app.agents.mediation import TEMPLATE_SPEECH_SOURCES, speech_source_of, verify_unconfirmed_of
 from app.agents.personalization import mediation_speaker_kwargs, personalization_user_id, speaker_profile_id
 from app.agents.sanitize import strip_markdown
 from app.agents.task_pipeline import CacheReplayResult, DispatchResult
@@ -375,6 +375,7 @@ class DefaultDispatchStrategy(DispatchStrategy):
                 directive=directive,
                 directive_reason=directive_reason,
                 speech_source=speech_source_of((result or {}).get("metadata")),
+                verify_unconfirmed=verify_unconfirmed_of((result or {}).get("metadata")),
             )
 
         # Multi-agent dispatch
@@ -466,6 +467,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         merge_voice_followup_and_organic: Callable | None = None,
         finalize_single_agent_response: Callable | None = None,
         create_trace: Callable | None = None,
+        roll_organic_followup: Callable | None = None,
     ) -> None:
         self._cache_orchestrator = cache_orchestrator
         self._calendar_injector = calendar_injector
@@ -476,6 +478,9 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
         del merge_voice_followup_and_organic
         self._finalize_single_agent_response = finalize_single_agent_response
         self._create_trace = create_trace
+        # ``(task, has_error) -> Awaitable[bool]``: the turn's organic
+        # follow-up roll. Without it the merge never gets an organic follow-up.
+        self._roll_organic_followup = roll_organic_followup
 
     async def execute(
         self,
@@ -550,6 +555,9 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         except Exception:
                             logger.debug("Calendar reminder injection failed", exc_info=True)
 
+                    allow_organic_followup = False
+                    if self._roll_organic_followup is not None and task is not None:
+                        allow_organic_followup = bool(await self._roll_organic_followup(task, has_error))
                     speech, mediated_followup = await self._merge_responses(
                         agent_responses,
                         user_text,
@@ -558,8 +566,12 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                         failed_agents=unreachable or None,
                         language=language,
                         skipped_tasks=skipped_tasks or None,
+                        allow_organic_followup=allow_organic_followup,
                         **mediation_speaker_kwargs(task.context if task else None),
                     )
+                    # A merged [FOLLOWUP] tag only counts when this turn
+                    # allowed an organic follow-up question.
+                    mediated_followup = mediated_followup and allow_organic_followup
 
                 ret_span["metadata"]["agent_response"] = speech
                 followup_question = bool(agent_voice_followup or mediated_followup) and not stateless_task
@@ -639,6 +651,7 @@ class DefaultFinalizationStrategy(FinalizationStrategy):
                 canned_code=canned_error_code(agent_error),
                 speech_source=dispatch_result.speech_source,
                 localize_speech=dispatch_result.speech_source in TEMPLATE_SPEECH_SOURCES,
+                verify_unconfirmed=dispatch_result.verify_unconfirmed,
             )
 
         response = {

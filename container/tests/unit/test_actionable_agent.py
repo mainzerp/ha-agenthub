@@ -2288,6 +2288,9 @@ class TestConfirmationSpeechSource:
         assert result.speech.startswith("Light A is on. ")
         assert "Light B is on." not in result.speech
         assert result.metadata["speech_source"] == "mixed"
+        # Issue #237: one unconfirmed action marks the merged result, even
+        # when the first (headline) action was confirmed.
+        assert result.metadata["verify_outcome"] == "unverified"
 
     async def test_multi_action_all_confirmed(self):
         response = (
@@ -2304,6 +2307,17 @@ class TestConfirmationSpeechSource:
         )
         assert result.speech == "Light A is on. Light B is on."
         assert result.metadata["speech_source"] == "confirmation"
+        assert "verify_outcome" not in result.metadata
+
+    async def test_single_action_unverified_marks_metadata(self):
+        result = await self._run(
+            LightAgent(),
+            '```json\n{"action": "turn_on", "entity": "a"}\n```',
+            {"a": ({"success": True, "entity_id": "light.a", "speech": "Done."}, [_record("light.a", "unverified")])},
+        )
+        assert "has not confirmed the new state yet" in result.speech
+        assert result.metadata["verify_outcome"] == "unverified"
+        assert result.metadata["speech_source"] == "template"
 
     async def test_parse_miss_prose_is_llm_source(self):
         result = await self._run(LightAgent(), "All lights are off right now.", {})

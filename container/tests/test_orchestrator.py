@@ -3430,13 +3430,28 @@ class TestFollowupDetection:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_mediate_response_extracts_followup_tag(self, mock_complete, mock_settings):
-        """Mediator output ending with [FOLLOWUP] is stripped and flag is set."""
+        """With an organic follow-up allowed, a trailing [FOLLOWUP] is stripped and the flag is set."""
         orch = self._make_orchestrator()
         mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
         mock_complete.return_value = "Should I turn it off? [FOLLOWUP]"
-        speech, followup = await orch._mediate_response("Done.", "turn off light", "light-agent")
+        speech, followup = await orch._mediate_response(
+            "Done.", "turn off light", "light-agent", allow_organic_followup=True
+        )
         assert speech == "Should I turn it off?"
         assert followup is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediate_response_ignores_followup_tag_when_not_allowed(self, mock_complete, mock_settings):
+        """Issue #237: without an organic follow-up the tag is stripped but never counts."""
+        orch = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
+        mock_complete.return_value = "Your 12 minute timer is running. Should I announce the end?[FOLLOWUP]"
+        speech, followup = await orch._mediate_response(
+            "Started 12 minutes timer for 12 minutes.", "set a timer for 12 minutes", "timer-agent"
+        )
+        assert speech == "Your 12 minute timer is running. Should I announce the end?"
+        assert followup is False
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
@@ -3461,7 +3476,24 @@ class TestFollowupDetection:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_merge_responses_extracts_followup_tag(self, mock_complete, mock_settings):
-        """Merge output ending with [FOLLOWUP] is stripped and flag is set."""
+        """With an organic follow-up allowed, a trailing merged [FOLLOWUP] is stripped and the flag is set."""
+        orch = self._make_orchestrator()
+        mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
+        mock_complete.return_value = "Done. Should I dim it too?[FOLLOWUP]"
+        agent_responses = [
+            ("light-agent", "Light is on.", True),
+            ("music-agent", "Playing jazz.", False),
+        ]
+        speech, followup = await orch._merge_responses(
+            agent_responses, "turn on light and play jazz", allow_organic_followup=True
+        )
+        assert speech == "Done. Should I dim it too?"
+        assert followup is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_merge_responses_ignores_followup_tag_when_not_allowed(self, mock_complete, mock_settings):
+        """Issue #237: without an organic follow-up the merged tag is stripped but never counts."""
         orch = self._make_orchestrator()
         mock_settings.get_value = AsyncMock(return_value="You are a friendly assistant.")
         mock_complete.return_value = "Done. Should I dim it too?[FOLLOWUP]"
@@ -3471,7 +3503,7 @@ class TestFollowupDetection:
         ]
         speech, followup = await orch._merge_responses(agent_responses, "turn on light and play jazz")
         assert speech == "Done. Should I dim it too?"
-        assert followup is True
+        assert followup is False
 
     def test_strip_followup_tag_helper(self):
         """_strip_followup_tag strips a trailing tag and reports presence."""
@@ -4107,3 +4139,309 @@ class TestTemplateSpeechLocalization:
         assert len(final) == 1
         assert final[0].get("mediated_speech") == _TEMPLATE_SPEECH
         assert final[0].get("error") is None
+
+    # --- unverified action outcome (issue #237) ---
+
+    _HEDGE_SPEECH = "I sent the command to Kitchen, but it has not confirmed the new state yet."
+    _LOCALIZED_HEDGE = "Ich habe den Befehl an Kitchen gesendet, aber der neue Zustand ist noch nicht bestaetigt."
+
+    def _unverified_result(self) -> dict:
+        return {
+            "speech": self._HEDGE_SPEECH,
+            "action_executed": {"action": "media_pause", "entity_id": "media_player.kitchen", "success": True},
+            "metadata": {"speech_source": "template", "verify_outcome": "unverified"},
+        }
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_unverified_result_skips_personality_mediation(self, mock_complete, mock_track, mock_settings):
+        """An unconfirmed action is never personality-mediated (no success
+        claim can be invented); the hedge is only localized."""
+        from app.analytics.tracer import SpanCollector
+
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de", personality="You are friendly."))
+        orch, *_ = self._make_orchestrator(self._unverified_result())
+        orch._mediate_response = AsyncMock(return_value=("Die Wiedergabe ist pausiert.", False))
+        orch._mediation.localize_message = AsyncMock(return_value=self._LOCALIZED_HEDGE)
+        mock_complete.return_value = "light-agent (95%): pause kitchen"
+        task = _make_task("pausiere die kueche")
+        task.span_collector = SpanCollector("trace-unverified")
+
+        result = await orch.handle_task(task)
+
+        assert result["speech"] == self._LOCALIZED_HEDGE
+        orch._mediate_response.assert_not_called()
+        orch._mediation.localize_message.assert_awaited_once()
+        assert orch._mediation.localize_message.await_args.args[:2] == (self._HEDGE_SPEECH, "de")
+        # Only the classification LLM call ran.
+        assert mock_complete.await_count == 1
+        ret_spans = [s for s in task.span_collector.get_spans() if s["span_name"] == "return"]
+        assert ret_spans[0]["metadata"]["mediation_skipped"] == "verify_unconfirmed"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_unverified_result_english_turn_speaks_hedge(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("en", personality="You are friendly."))
+        orch, *_ = self._make_orchestrator(self._unverified_result())
+        orch._mediate_response = AsyncMock(return_value=("Playback is paused.", False))
+        orch._mediation.localize_message = AsyncMock(return_value="unused")
+        mock_complete.return_value = "light-agent (95%): pause kitchen"
+
+        result = await orch.handle_task(_make_task("pause the kitchen"))
+
+        assert result["speech"] == self._HEDGE_SPEECH
+        orch._mediate_response.assert_not_called()
+        orch._mediation.localize_message.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_unverified_result_skips_personality_mediation(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=_settings_lookup("de", personality="You are friendly."))
+        orch, dispatcher, _ = self._make_orchestrator()
+        orch._mediate_response = AsyncMock(return_value=("Die Wiedergabe ist pausiert.", False))
+        orch._mediation.localize_message = AsyncMock(return_value=self._LOCALIZED_HEDGE)
+        mock_complete.return_value = "light-agent (95%): pause kitchen"
+
+        async def _no_mediation_stream(**kwargs):
+            raise AssertionError("personality mediation must not stream for an unconfirmed action")
+            yield  # pragma: no cover -- async generator shape
+
+        orch._mediate_response_stream = _no_mediation_stream
+
+        async def mock_stream(request):
+            yield {
+                "token": self._HEDGE_SPEECH,
+                "done": True,
+                "metadata": {"speech_source": "template", "verify_outcome": "unverified"},
+            }
+
+        dispatcher.dispatch_stream = mock_stream
+        task = _make_task("pausiere die kueche")
+        task.conversation_id = "conv-unverified-stream"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert [c for c in chunks if not c["done"] and c.get("token")] == []
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") == self._LOCALIZED_HEDGE
+        orch._mediate_response.assert_not_called()
+        orch._mediation.localize_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Mediated [FOLLOWUP] only counts when an organic follow-up was allowed (#237)
+# ---------------------------------------------------------------------------
+
+_TIMER_SPEECH = "Started 12 minutes timer for 12 minutes."
+_MEDIATED_OFFER = "Your 12 minute timer is running. Should I announce when it ends?"
+
+
+def _followup_settings(personality: str = "You are friendly.", **extra: str):
+    values = {"language": "en", "personality.prompt": personality, "orchestrator.organic_followup_enabled": "false"}
+    values.update(extra)
+    return lambda k, d=None: values.get(k, d)
+
+
+class TestMediatedFollowupGuard:
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with (
+            patch("app.agents.conversation_manager.ConversationRepository") as mock_repo,
+            patch("app.agents.conversation_manager.get_memory_service", return_value=None),
+        ):
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
+    @staticmethod
+    def _make_orchestrator(dispatch_result: dict | None = None):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.try_replay_action = AsyncMock(return_value=None)
+        cache_manager.try_routing_skip = AsyncMock(return_value=None)
+        cache_manager.store_action_async = AsyncMock()
+        cache_manager.store_routing_async = AsyncMock()
+        dispatcher.dispatch = AsyncMock(return_value=dispatch_result or {"speech": _TIMER_SPEECH})
+        registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="timer-agent", name="Timer Agent", description="", skills=["timer"]),
+                AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+                AgentCard(agent_id="music-agent", name="Music Agent", description="", skills=["music"]),
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+            ]
+        )
+        orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
+        orch._should_send_filler = AsyncMock(return_value=False)
+        return orch, dispatcher
+
+    @staticmethod
+    def _task(conversation_id: str) -> IngressTask:
+        return IngressTask(
+            description="set a timer for 12 minutes",
+            conversation_id=conversation_id,
+            context=TaskContext(language="en", source="ha"),
+        )
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_timer_result_mediated_question_is_not_a_followup(self, mock_complete, mock_track, mock_settings):
+        """Trace 3cd745: a mediated offer with [FOLLOWUP] on a plain timer
+        confirmation must not arm a pending question (a "yes" would start a
+        second timer) nor reopen the microphone."""
+        mock_settings.get_value = AsyncMock(side_effect=_followup_settings())
+        mock_complete.side_effect = ["timer-agent (95%): set timer 12 minutes", f"{_MEDIATED_OFFER}[FOLLOWUP]"]
+        orch, _ = self._make_orchestrator()
+
+        result = await orch.handle_task(self._task("conv-237-blocking"))
+
+        assert result["speech"] == _MEDIATED_OFFER
+        assert result["voice_followup"] is False
+        assert orch._conversation_manager.pop_pending_question("conv-237-blocking") is None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_timer_result_mediated_question_is_not_a_followup(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        mock_settings.get_value = AsyncMock(side_effect=_followup_settings())
+        mock_complete.return_value = "timer-agent (95%): set timer 12 minutes"
+        orch, dispatcher = self._make_orchestrator()
+
+        async def _stream(_request):
+            yield {"token": _TIMER_SPEECH, "done": True}
+
+        dispatcher.dispatch_stream = _stream
+
+        async def _fake_mediation_stream(**kwargs):
+            assert kwargs["allow_organic_followup"] is False
+            yield _MEDIATED_OFFER
+            yield "[FOLLOWUP]"
+
+        orch._mediate_response_stream = _fake_mediation_stream
+
+        chunks = [c async for c in orch.handle_task_stream(self._task("conv-237-stream"))]
+
+        spoken = "".join(c.get("token", "") for c in chunks if not c.get("done"))
+        assert "FOLLOWUP" not in spoken
+        assert spoken.strip() == _MEDIATED_OFFER
+        done = [c for c in chunks if c.get("done")]
+        assert len(done) == 1
+        assert not done[0].get("voice_followup")
+        assert orch._conversation_manager.pop_pending_question("conv-237-stream") is None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_agent_clarifying_question_still_requests_followup(self, mock_complete, mock_track, mock_settings):
+        """The agent's own question keeps its voice follow-up through
+        personality mediation (no organic follow-up, no tag needed)."""
+        mock_settings.get_value = AsyncMock(side_effect=_followup_settings())
+        mock_complete.side_effect = ["timer-agent (95%): set a timer", "How long should the timer run?"]
+        orch, _ = self._make_orchestrator({"speech": "For how long?", "voice_followup": True})
+
+        result = await orch.handle_task(self._task("conv-237-agent-question"))
+
+        assert result["speech"] == "How long should the timer run?"
+        assert result["voice_followup"] is True
+        assert orch._conversation_manager.pop_pending_question("conv-237-agent-question") is not None
+
+    @pytest.mark.parametrize("allow", [False, True])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_mediation_prompt_followup_section(self, mock_complete, mock_settings, allow):
+        """Without an organic follow-up the rendered prompt never mentions the
+        [FOLLOWUP] tag and forbids added questions or offers; both variants
+        keep the hedge and first-person rules."""
+        mock_settings.get_value = AsyncMock(return_value="You are friendly.")
+        mock_complete.return_value = "Your timer is running."
+        orch, _ = self._make_orchestrator()
+
+        await orch._mediate_response(_TIMER_SPEECH, "set a timer", "timer-agent", allow_organic_followup=allow)
+
+        system_prompt = mock_complete.await_args.args[1][0]["content"]
+        assert "{organic_followup_hint}" not in system_prompt
+        assert ("[FOLLOWUP]" in system_prompt) is allow
+        if not allow:
+            assert "Do not add any question, offer, or suggestion that is not in the agent response." in system_prompt
+            assert "already in the agent response stays a question" in system_prompt
+        assert "never claim the action succeeded" in system_prompt
+        assert "in the third person" in system_prompt
+
+    # --- multi-agent merge ---
+
+    _MERGED_OFFER = "The shelf light is on and jazz is playing. Should I dim the light?"
+
+    async def _run_multi_agent_turn(self, mock_complete, mock_settings, conversation_id: str, **settings: str):
+        mock_settings.get_value = AsyncMock(side_effect=_followup_settings(**settings))
+        mock_complete.side_effect = [
+            "light-agent (95%): turn on shelf\nmusic-agent (90%): play jazz",
+            f"{self._MERGED_OFFER}[FOLLOWUP]",
+        ]
+        orch, dispatcher = self._make_orchestrator()
+        dispatcher.dispatch = AsyncMock(side_effect=[{"speech": "Shelf is on."}, {"speech": "Playing jazz."}])
+        task = self._task(conversation_id)
+        task.description = "turn on the shelf and play jazz"
+        result = await orch.handle_task(task)
+        return orch, result
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_multi_agent_merged_question_is_not_a_followup(self, mock_complete, mock_track, mock_settings):
+        """A merged offer with [FOLLOWUP] while organic follow-ups are off arms
+        no pending question and does not reopen the microphone."""
+        orch, result = await self._run_multi_agent_turn(mock_complete, mock_settings, "conv-237-merge")
+
+        assert "light-agent" in result["routed_to"] and "music-agent" in result["routed_to"]
+        assert result["speech"] == self._MERGED_OFFER
+        assert result["voice_followup"] is False
+        assert orch._conversation_manager.pop_pending_question("conv-237-merge") is None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_multi_agent_merged_question_counts_when_organic_allowed(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        orch, result = await self._run_multi_agent_turn(
+            mock_complete,
+            mock_settings,
+            "conv-237-merge-organic",
+            **{
+                "orchestrator.organic_followup_enabled": "true",
+                "orchestrator.organic_followup_probability": "1.0",
+            },
+        )
+
+        assert result["speech"] == self._MERGED_OFFER
+        assert result["voice_followup"] is True
+        assert orch._conversation_manager.pop_pending_question("conv-237-merge-organic") is not None
+
+    @pytest.mark.parametrize("allow", [False, True])
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_merge_prompt_followup_section(self, mock_complete, mock_settings, allow):
+        mock_settings.get_value = AsyncMock(return_value="You are friendly.")
+        mock_complete.return_value = "Done."
+        orch, _ = self._make_orchestrator()
+
+        await orch._merge_responses(
+            [("light-agent", "Light is on.", True), ("music-agent", "Playing jazz.", True)],
+            "light and jazz",
+            allow_organic_followup=allow,
+        )
+
+        system_prompt = mock_complete.await_args.args[1][0]["content"]
+        assert "{organic_followup_hint}" not in system_prompt
+        assert ("[FOLLOWUP]" in system_prompt) is allow
+        if not allow:
+            assert "Do not add any question, offer, or suggestion that is not in the agent responses." in system_prompt
+            assert "already in the agent responses stays a question" in system_prompt
+        assert "never claim the action succeeded" in system_prompt
+        assert "in the third person" in system_prompt

@@ -1048,6 +1048,10 @@ class ActionableAgent(BaseAgent):
         )
 
         metadata = dict(results[0].get("metadata") or {})
+        # One unconfirmed action hedges the whole merged speech: the
+        # orchestrator must not personality-mediate it into a success claim.
+        if any((result.get("metadata") or {}).get("verify_outcome") == VERIFY_UNVERIFIED for result in results):
+            metadata["verify_outcome"] = VERIFY_UNVERIFIED
         speech = " ".join(s for result in results if (s := (result.get("speech") or "").strip()))
         speech_sources = [
             result.get("speech_source", SPEECH_SOURCE_TEMPLATE)

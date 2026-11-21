@@ -31,6 +31,7 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any
 
+from app.agents.action_executor import VERIFY_UNVERIFIED
 from app.agents.base import UNTRUSTED_NAME_MAX_CHARS, language_code_to_name, sanitize_untrusted_text
 from app.agents.sanitize import _remove_asides, strip_markdown_markers, strip_parenthetical_asides
 from app.analytics.tracer import _optional_span
@@ -118,6 +119,57 @@ def speech_source_of(metadata: Any) -> str | None:
 def needs_template_localization(speech_source: str | None, language: str | None) -> bool:
     """True when agent speech is an English executor template in a non-English turn."""
     return speech_source in TEMPLATE_SPEECH_SOURCES and not is_english_language(language)
+
+
+# ``{organic_followup_hint}`` of mediate.txt and merge.txt. Only the allowed variant
+# mentions the [FOLLOWUP] tag: with organic follow-ups off the model is never
+# taught the tag, and a mediated question it adds anyway does not count (the
+# caller ignores the tag; a question in the agent response itself is carried
+# by the agent's own ``voice_followup`` flag).
+_ORGANIC_FOLLOWUP_ALLOWED_HINT = "\n".join(
+    (
+        "Follow-up question (allowed for this response):",
+        "- You may end with one short, natural follow-up question that fits the agent response.",
+        "- If your output asks the user a question that requires an answer, append the exact suffix [FOLLOWUP]"
+        " at the very end. This tag is the only non-spoken token you may add.",
+        "- If your output is a statement, confirmation, or information only, do NOT append any tag.",
+        '- Examples with the tag: "The light is on. Should I turn it off?[FOLLOWUP]",'
+        ' "Should I turn off the irrigation?[FOLLOWUP]"',
+        '- Examples without a tag: "The kitchen light is now on.", "The irrigation is off."',
+    )
+)
+
+_ORGANIC_FOLLOWUP_DISALLOWED_HINT = "\n".join(
+    (
+        "Follow-up questions (not allowed for this response):",
+        "- Do not add any question, offer, or suggestion that is not in the agent response.",
+        "- A question to the user that is already in the agent response stays a question.",
+        "- Never append any tag or bracketed marker to your output.",
+    )
+)
+
+
+def organic_followup_hint(allow_organic_followup: bool, *, subject: str = "the agent response") -> str:
+    """Text substituted for ``{organic_followup_hint}`` in mediate.txt and merge.txt.
+
+    ``subject`` names the input the reply is built from ("the agent
+    responses" for the multi-agent merge).
+    """
+    hint = _ORGANIC_FOLLOWUP_ALLOWED_HINT if allow_organic_followup else _ORGANIC_FOLLOWUP_DISALLOWED_HINT
+    return hint.replace("the agent response", subject)
+
+
+def verify_unconfirmed_of(metadata: Any) -> bool:
+    """True when an agent result reports an action whose new state was not confirmed.
+
+    ``ActionableAgent._apply_verification_outcome`` sets
+    ``metadata["verify_outcome"]`` (any action of a multi-action turn counts).
+
+    Such speech is a hedge ("... has not confirmed the new state yet"); the
+    orchestrator skips personality mediation for it (only localization runs)
+    so the rephrasing can never turn it into a success claim.
+    """
+    return isinstance(metadata, dict) and metadata.get("verify_outcome") == VERIFY_UNVERIFIED
 
 
 class MediationStreamError(Exception):
@@ -236,6 +288,7 @@ class MediationService:
         skipped_tasks: list[str] | None = None,
         speaker_name: str | None = None,
         speaker_source: str | None = None,
+        allow_organic_followup: bool = False,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer via LLM.
 
@@ -252,6 +305,9 @@ class MediationService:
         the request's HA user, otherwise a voice match (unverified).
         System lines without agent output (nothing answered, all agents
         failed) are localized into ``language`` via :meth:`localize_message`.
+        A trailing [FOLLOWUP] tag is always stripped; the returned flag is
+        True only when ``allow_organic_followup`` was set (same rule as
+        :meth:`mediate_response`).
         Falls back to bracket-prefixed format on failure.
         """
         if not agent_responses:
@@ -286,7 +342,11 @@ class MediationService:
 
             system_content = await self._orch._load_prompt_async("merge")
             personality_text = personality.strip() if personality and personality.strip() else ""
-            system_content = system_content.replace("{personality}", personality_text).strip()
+            system_content = system_content.replace("{personality}", personality_text)
+            system_content = system_content.replace(
+                "{organic_followup_hint}",
+                organic_followup_hint(allow_organic_followup, subject="the agent responses"),
+            ).strip()
 
             user_content = (
                 f"User asked:\n{self._orch._wrap_user_input(user_text)}\n\nAgent responses:\n{agent_summary}\n\n"
@@ -326,7 +386,7 @@ class MediationService:
             result = await self._orch._call_llm(messages, span_collector=span_collector, **overrides)
             merged = result.strip() if result and result.strip() else self.format_fallback(agent_responses)
             merged, followup = _strip_followup_tag(merged)
-            return merged, followup
+            return merged, followup and allow_organic_followup
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -428,7 +488,9 @@ class MediationService:
         Falls back to the original speech (+ appended reminder) on any failure.
 
         Returns:
-            Tuple of (mediated_speech, followup_needed).
+            Tuple of (mediated_speech, followup_needed). A trailing [FOLLOWUP]
+            tag is always stripped; ``followup_needed`` is True only when the
+            tag was present and ``allow_organic_followup`` was set.
         """
         personality = await self._orch._get_personality_cached()
         if not personality.strip():
@@ -446,10 +508,7 @@ class MediationService:
             system_prompt = system_prompt.replace("{personality}", personality_text)
             system_prompt = system_prompt.replace("{language}", language_code_to_name(language))
             system_prompt = system_prompt.replace(
-                "{organic_followup_hint}",
-                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
-                if allow_organic_followup
-                else "Do not add any follow-up questions.",
+                "{organic_followup_hint}", organic_followup_hint(allow_organic_followup)
             ).strip()
             user_content = (
                 f"User asked:\n{self._orch._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"
@@ -479,7 +538,9 @@ class MediationService:
                 span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
             mediated = strip_parenthetical_asides(result) if result and result.strip() else agent_speech
             mediated, followup = _strip_followup_tag(mediated)
-            return mediated, followup
+            # The tag is always stripped, but it only counts when this call
+            # allowed an organic follow-up question.
+            return mediated, followup and allow_organic_followup
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -506,7 +567,9 @@ class MediationService:
         Yields mediated tokens as the LLM generates them.
         The caller must collect tokens and run post-processing
         (strip_parenthetical_asides, [FOLLOWUP] detection) on the
-        complete text. This method does NOT return the followup flag.
+        complete text. This method does NOT return the followup flag; the
+        caller counts a detected tag only when ``allow_organic_followup``
+        was set for this call (same rule as :meth:`mediate_response`).
         """
         personality = await self._orch._get_personality_cached()
         if not personality.strip():
@@ -526,10 +589,7 @@ class MediationService:
             system_prompt = system_prompt.replace("{personality}", personality_text)
             system_prompt = system_prompt.replace("{language}", language_code_to_name(language))
             system_prompt = system_prompt.replace(
-                "{organic_followup_hint}",
-                "You may add a natural follow-up question at the end. Append [FOLLOWUP] if you do."
-                if allow_organic_followup
-                else "Do not add any follow-up questions.",
+                "{organic_followup_hint}", organic_followup_hint(allow_organic_followup)
             ).strip()
             user_content = (
                 f"User asked:\n{self._orch._wrap_user_input(user_text)}\nAgent ({agent_id}) responded: {agent_speech}"

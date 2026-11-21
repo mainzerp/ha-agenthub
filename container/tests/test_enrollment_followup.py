@@ -247,8 +247,9 @@ class TestBlockingPath:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_mediation_gets_no_organic_followup_while_armed(self, mock_complete, mock_settings, _random, armed):
-        """An organic follow-up roll that would win is dropped, and a mediated
-        [FOLLOWUP] question does not reopen the mic."""
+        """An organic follow-up roll that would win is dropped, so a mediated
+        [FOLLOWUP] question does not count and does not reopen the mic; the
+        suppression is recorded on the root span."""
         mock_settings.get_value = AsyncMock(
             side_effect=_settings(
                 **{
@@ -268,7 +269,8 @@ class TestBlockingPath:
 
         assert orch._mediate_response.await_args.kwargs["allow_organic_followup"] is False
         assert result["voice_followup"] is False
-        assert _return_span(task)[FOLLOWUP_SUPPRESSED_ATTR] == FOLLOWUP_SUPPRESSED_ENROLLMENT
+        assert task.span_collector.request_attributes[FOLLOWUP_SUPPRESSED_ATTR] == FOLLOWUP_SUPPRESSED_ENROLLMENT
+        assert orch._conversation_manager.pop_pending_question("conv-enroll-organic") is None
 
     @patch("app.agents.orchestrator.random.random", return_value=0.01)
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -300,7 +302,17 @@ class TestStreamingPath:
         self, mock_complete, mock_track, mock_settings, armed
     ):
         mock_complete.return_value = "light-agent (95%): turn on light"
-        mock_settings.get_value = AsyncMock(side_effect=_settings(**{"personality.prompt": "You are friendly."}))
+        # An organic follow-up roll that would win (probability 1) is dropped
+        # while enrollment is armed.
+        mock_settings.get_value = AsyncMock(
+            side_effect=_settings(
+                **{
+                    "personality.prompt": "You are friendly.",
+                    "orchestrator.organic_followup_enabled": "true",
+                    "orchestrator.organic_followup_probability": "1.0",
+                }
+            )
+        )
         orch, dispatcher = _make_orchestrator()
 
         async def _stream(_request):
@@ -309,6 +321,7 @@ class TestStreamingPath:
         dispatcher.dispatch_stream = _stream
 
         async def _fake_mediation_stream(**kwargs):
+            assert kwargs["allow_organic_followup"] is False
             yield "Light is on. Want more?"
             yield "[FOLLOWUP]"
 
@@ -325,7 +338,8 @@ class TestStreamingPath:
         assert orch._create_trace.await_args.kwargs["voice_followup"] is False
         # The streamed-mediation finalization has no return span: the root span carries it.
         assert task.span_collector.request_attributes[FOLLOWUP_SUPPRESSED_ATTR] == FOLLOWUP_SUPPRESSED_ENROLLMENT
-        assert orch._conversation_manager.pop_pending_question("conv-enroll-stream") is not None
+        # The organic follow-up was not allowed, so the mediated tag does not count.
+        assert orch._conversation_manager.pop_pending_question("conv-enroll-stream") is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -384,7 +398,7 @@ class TestMultiAgentPath:
         conv.store_turn = AsyncMock()
         strategy = DefaultFinalizationStrategy(
             conversation_manager=conv,
-            merge_responses=AsyncMock(return_value=("Light on. Shall I also start music?", True)),
+            merge_responses=AsyncMock(return_value=("Light on. Which music should I start?", False)),
             create_trace=AsyncMock(),
         )
         dispatch_result = DispatchResult(
@@ -394,7 +408,9 @@ class TestMultiAgentPath:
             speech="",
             action_executed=None,
             has_error=False,
-            agent_responses=[("light-agent", "Light on.", True), ("music-agent", "Ready.", False)],
+            agent_responses=[("light-agent", "Light on.", True), ("music-agent", "Which music?", False)],
+            # The music agent asked a clarifying question (agent-side follow-up).
+            agent_voice_followup=True,
         )
         task = _task("light and music", "conv-enroll-multi")
         response = await strategy.execute(

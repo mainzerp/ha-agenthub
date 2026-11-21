@@ -180,12 +180,14 @@ class TestFollowupPinning:
 
 class TestMultiAgentPendingQuestion:
     async def test_merged_followup_sets_pending_question(self):
+        """A merged [FOLLOWUP] counts when the turn's organic follow-up roll won."""
         conv = MagicMock()
         conv.store_turn = AsyncMock()
         strategy = DefaultFinalizationStrategy(
             conversation_manager=conv,
             merge_responses=AsyncMock(return_value=("Light on. Shall I also start music?", True)),
             create_trace=AsyncMock(),
+            roll_organic_followup=AsyncMock(return_value=True),
         )
         dispatch_result = DispatchResult(
             classifications=[("light-agent", "a", 0.9), ("music-agent", "b", 0.9)],
@@ -213,6 +215,45 @@ class TestMultiAgentPendingQuestion:
             "conv-multi", "Light on. Shall I also start music?", "light-agent, music-agent"
         )
         assert response["voice_followup"] is True
+
+    @pytest.mark.parametrize("roll", [None, False])
+    async def test_merged_followup_ignored_without_organic_followup(self, roll):
+        """Issue #237: a merged [FOLLOWUP] without an organic follow-up (roll
+        lost, or no roll wired) arms no pending question and no voice follow-up."""
+        conv = MagicMock()
+        conv.store_turn = AsyncMock()
+        merge = AsyncMock(return_value=("Light on. Shall I also start music?", True))
+        strategy = DefaultFinalizationStrategy(
+            conversation_manager=conv,
+            merge_responses=merge,
+            create_trace=AsyncMock(),
+            roll_organic_followup=None if roll is None else AsyncMock(return_value=roll),
+        )
+        dispatch_result = DispatchResult(
+            classifications=[("light-agent", "a", 0.9), ("music-agent", "b", 0.9)],
+            target_agent="light-agent",
+            routed_to="light-agent, music-agent",
+            speech="",
+            action_executed=None,
+            has_error=False,
+            agent_responses=[("light-agent", "Light on.", True), ("music-agent", "Ready.", False)],
+        )
+        task = _task("light and music", conversation_id="conv-multi-no-organic", source="ha")
+        response = await strategy.execute(
+            task,
+            dispatch_result,
+            "light and music",
+            "en",
+            "conv-multi-no-organic",
+            [],
+            None,
+            dispatch_result.classifications,
+            False,
+            False,
+        )
+        assert merge.await_args.kwargs["allow_organic_followup"] is False
+        conv.set_pending_question.assert_not_called()
+        assert response["voice_followup"] is False
 
 
 # ---------------------------------------------------------------------------

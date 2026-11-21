@@ -857,8 +857,9 @@ class TestFirstFrameLatency:
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_reminder_only_mediation_still_weaves_followup(self, mock_complete, mock_track, mock_settings):
         """The mediation path still runs the LLM (reminder weaving) and still
-        detects the [FOLLOWUP] tag -- here with streaming mediation disabled
-        so the blocking path mediates."""
+        detects the [FOLLOWUP] tag when the turn allows an organic follow-up
+        -- here with streaming mediation disabled so the blocking path
+        mediates."""
         mock_complete.side_effect = [
             "light-agent (95%): Turn on light",  # classify
             "Light is on. Meeting at 3pm. Should I dim it?[FOLLOWUP]",  # mediation
@@ -874,6 +875,14 @@ class TestFirstFrameLatency:
         orch._calendar_injector = MagicMock()
         orch._calendar_injector.inject_reminders = AsyncMock(return_value="Meeting at 3pm.")
         orch._should_send_filler = AsyncMock(return_value=False)
+        # The organic follow-up roll won for this turn (reminder from the injector).
+        real_prepare = orch._prepare_mediation_inputs
+
+        async def _prepare_with_organic(*args, **kwargs):
+            reminder_text, _allow = await real_prepare(*args, **kwargs)
+            return reminder_text, True
+
+        orch._prepare_mediation_inputs = _prepare_with_organic
 
         async def _stream(_request):
             yield {"token": "Light is on.", "done": True}
@@ -958,6 +967,8 @@ class TestFollowupTagNotStreamed:
         orch, dispatcher = _make_orchestrator()
         orch._should_send_filler = AsyncMock(return_value=False)
         orch._mediate_response = AsyncMock()
+        # The organic follow-up roll won for this turn.
+        orch._prepare_mediation_inputs = AsyncMock(return_value=(None, True))
 
         async def _stream(_request):
             yield {"token": "Light is on.", "done": True}
@@ -1086,6 +1097,8 @@ class TestFollowupTagNotStreamed:
         )
         orch, dispatcher = _make_orchestrator()
         orch._should_send_filler = AsyncMock(return_value=False)
+        # The organic follow-up roll won for this turn.
+        orch._prepare_mediation_inputs = AsyncMock(return_value=(None, True))
 
         async def _stream(_request):
             yield {"token": "Light is on.", "done": True}
@@ -1193,8 +1206,9 @@ class TestTextOnlySourceRules:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_voice_followup_by_source(self, mock_complete, mock_track, mock_settings, source, expected):
-        """A mediated [FOLLOWUP] question requests a voice follow-up for HA
-        but never for the text-only openai source (frame and trace); the
+        """An agent clarifying question (agent ``voice_followup``), rephrased by
+        personality mediation without any tag, requests a voice follow-up for
+        HA but never for the text-only openai source (frame and trace); the
         pending clarifying question is kept for both."""
         mock_complete.return_value = "light-agent (95%): Turn on light"
         mock_settings.get_value = AsyncMock(
@@ -1208,13 +1222,12 @@ class TestTextOnlySourceRules:
         orch._create_trace = AsyncMock()
 
         async def _stream(_request):
-            yield {"token": "Light is on.", "done": True}
+            yield {"token": "Which light do you mean?", "done": True, "voice_followup": True}
 
         dispatcher.dispatch_stream = _stream
 
         async def _fake_mediation_stream(**kwargs):
-            yield "Light is on. Want more?"
-            yield "[FOLLOWUP]"
+            yield "Which light would you like?"
 
         orch._mediate_response_stream = _fake_mediation_stream
 
@@ -1544,6 +1557,8 @@ class TestStreamedMediationFallback:
             yield "Frage? **[FOLLOWUP]**"
 
         orch, collector = _setup_mediated_turn(mock_settings, _bold_tag)
+        # The organic follow-up roll won for this turn.
+        orch._prepare_mediation_inputs = AsyncMock(return_value=(None, True))
         spoken, done, _meta = await _run_turn(orch, collector, "conv-bold-tag")
 
         # A space before the tag may be emitted first (known, out of scope).

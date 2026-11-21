@@ -48,6 +48,7 @@ from app.agents.mediation import (
     needs_template_localization,
     normalize_reasoning_effort,
     speech_source_of,
+    verify_unconfirmed_of,
 )
 from app.agents.personalization import (
     mediation_speaker_kwargs,
@@ -507,6 +508,9 @@ class StreamingContext:
     relayed_tokens: bool = False
     # ``metadata["speech_source"]`` from the agent's terminal chunk.
     speech_source: str | None = None
+    # The terminal chunk reports an action whose new state was not confirmed
+    # (``verify_unconfirmed_of``): personality mediation is skipped.
+    verify_unconfirmed: bool = False
     # True when the terminal chunk's English template speech was held back
     # from the token relay so finalization can localize it first.
     speech_held_for_localization: bool = False
@@ -649,6 +653,8 @@ class OrchestratorAgent(BaseAgent):
             merge_responses=self._merge_responses,
             create_trace=self._create_trace,
             finalize_single_agent_response=self._finalize_single_agent_response,
+            # Resolved at call time so instance-level patches take effect.
+            roll_organic_followup=lambda task, has_error: self._roll_organic_followup(task, has_error=has_error),
         )
 
     @property
@@ -1870,6 +1876,18 @@ class OrchestratorAgent(BaseAgent):
             except Exception:
                 logger.debug("Calendar reminder injection failed", exc_info=True)
 
+        allow_organic_followup = await self._roll_organic_followup(task, has_error=has_error)
+        return reminder_text, allow_organic_followup
+
+    async def _roll_organic_followup(self, task: IngressTask, *, has_error: bool) -> bool:
+        """Decide whether mediation or the merge may add a closing follow-up question this turn.
+
+        Only successful ``ha`` turns roll ``orchestrator.organic_followup_probability``
+        (when ``orchestrator.organic_followup_enabled``); stateless AI-task
+        turns and an armed voice enrollment never get one.
+        """
+        if source_is_stateless_task(task.context.source if task.context else None):
+            return False
         allow_organic_followup = False
         if task.context and task.context.source == "ha" and not has_error:
             try:
@@ -1883,8 +1901,7 @@ class OrchestratorAgent(BaseAgent):
         if allow_organic_followup:
             # An armed voice enrollment must not get a closing invitation question.
             allow_organic_followup = await organic_followup_allowed(task.span_collector)
-
-        return reminder_text, allow_organic_followup
+        return allow_organic_followup
 
     @staticmethod
     def _seed_return_span(ret_span: dict, from_agent: str, agent_response: str, speech_source: str | None) -> None:
@@ -2067,6 +2084,7 @@ class OrchestratorAgent(BaseAgent):
         canned_code: str | None = None,
         speech_source: str | None = None,
         localize_speech: bool = False,
+        verify_unconfirmed: bool = False,
     ) -> tuple[str, bool]:
         """Run the shared single-agent / sequential-send finalization
         block: open the ``return`` span, mediate the agent speech,
@@ -2101,6 +2119,10 @@ class OrchestratorAgent(BaseAgent):
         only). ``localize_speech`` marks agent speech that is an English
         executor template: in a non-English turn without personality
         mediation it is localized the same way (original speech on failure).
+        ``verify_unconfirmed`` marks agent speech that hedges an action whose
+        new state was not confirmed: personality mediation is skipped (a
+        rephrasing could turn the hedge into a success claim) and the speech
+        is only localized in a non-English turn.
         """
         if routed_to is None:
             routed_to = target_agent
@@ -2131,10 +2153,13 @@ class OrchestratorAgent(BaseAgent):
             should_mediate = (
                 not skip_mediation_llm
                 and not stateless_task
+                and not verify_unconfirmed
                 and target_agent not in (CANCEL_INTERACTION_AGENT, NOISE_AGENT)
                 and (not has_error or not skip_mediation_on_error)
                 and (bool(personality.strip()) or bool(reminder_text))
             )
+            if verify_unconfirmed:
+                ret_span["metadata"]["mediation_skipped"] = "verify_unconfirmed"
             mediated_followup = False
             if should_mediate:
                 speech, mediated_followup = await self._mediate_response(
@@ -2147,6 +2172,9 @@ class OrchestratorAgent(BaseAgent):
                     allow_organic_followup=allow_organic_followup,
                     **mediation_speaker_kwargs(task.context),
                 )
+                # A mediated [FOLLOWUP] tag only counts when this call allowed
+                # an organic follow-up question.
+                mediated_followup = mediated_followup and allow_organic_followup
             elif reminder_text:
                 # No mediation path -- append reminder directly as fallback
                 separator = " " if speech and speech[-1] in ".!?" else ". "
@@ -2155,7 +2183,7 @@ class OrchestratorAgent(BaseAgent):
             # renders the turn language; a reminder-only mediation does not.
             # A stalled mediation provider (skip_mediation_llm) gets no call.
             localize_template = (
-                localize_speech
+                (localize_speech or verify_unconfirmed)
                 and not canned_code
                 and not skip_mediation_llm
                 and not (should_mediate and personality.strip())
@@ -3038,6 +3066,7 @@ class OrchestratorAgent(BaseAgent):
                 sc.stream_reason = chunk_result.get("reason")
             if done:
                 sc.speech_source = speech_source_of(chunk_result.get("metadata"))
+                sc.verify_unconfirmed = verify_unconfirmed_of(chunk_result.get("metadata"))
             await _ensure_relay_decided()
             if not relay_state["enabled"] or not token:
                 return None
@@ -3412,6 +3441,11 @@ class OrchestratorAgent(BaseAgent):
         )
 
         tokens_were_streamed = sc.relayed_tokens
+        # Hedged agent speech (an action whose new state was not confirmed)
+        # skips personality mediation and is only localized by the blocking
+        # path below. Recovered speech does not come from the streamed agent;
+        # relayed tokens were already spoken.
+        verify_unconfirmed = sc.verify_unconfirmed and not recovered and not sc.relayed_tokens
         # M-9: the streaming mediation branch requires a non-empty
         # personality. A reminder-only turn (no personality) falls through to
         # the blocking path, which appends the reminder to the agent's answer
@@ -3419,6 +3453,7 @@ class OrchestratorAgent(BaseAgent):
         # answer).
         use_streamed_mediation = (
             not recovered
+            and not verify_unconfirmed
             and mediation_streaming_enabled
             and should_mediate
             and personality.strip()
@@ -3526,6 +3561,9 @@ class OrchestratorAgent(BaseAgent):
             mediated = strip_parenthetical_asides(collected_mediated) if collected_mediated.strip() else full_speech
             # Markers first, so a wrapped tag ("**[FOLLOWUP]**") is detected.
             mediated, followup = _strip_followup_tag(strip_markdown_markers(mediated))
+            # The tag is always stripped, but it only counts when this call
+            # allowed an organic follow-up question.
+            followup = followup and bool(allow_organic_followup)
             if mediation_failed:
                 # M-10: partial output was already spoken and cannot be
                 # retracted; persist the ORIGINAL full speech so the turn
@@ -3594,6 +3632,7 @@ class OrchestratorAgent(BaseAgent):
                 localize_speech=(
                     not recovered and not sc.relayed_tokens and sc.speech_source in TEMPLATE_SPEECH_SOURCES
                 ),
+                verify_unconfirmed=verify_unconfirmed,
             )
 
         # Yield final done chunk; mediated_speech is only included when tokens
@@ -3793,6 +3832,7 @@ class OrchestratorAgent(BaseAgent):
         skipped_tasks: list[str] | None = None,
         speaker_name: str | None = None,
         speaker_source: str | None = None,
+        allow_organic_followup: bool = False,
     ) -> tuple[str, bool]:
         """Merge multiple agent responses into a single natural answer.
 
@@ -3810,6 +3850,7 @@ class OrchestratorAgent(BaseAgent):
             skipped_tasks=skipped_tasks,
             speaker_name=speaker_name,
             speaker_source=speaker_source,
+            allow_organic_followup=allow_organic_followup,
         )
 
     @staticmethod

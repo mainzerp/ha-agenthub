@@ -57,6 +57,10 @@ class DispatchResult:
     # ``metadata["speech_source"]`` of a single-agent result ("confirmation",
     # "template", "mixed", "llm"); None when the agent did not report it.
     speech_source: str | None = None
+    # The single-agent result reports an action whose new state was not
+    # confirmed (``mediation.verify_unconfirmed_of``): personality mediation
+    # is skipped so the hedge is never rephrased into a success claim.
+    verify_unconfirmed: bool = False
 
 
 class PipelineDirector:
@@ -79,6 +83,7 @@ class PipelineDirector:
         merge_voice_followup_and_organic: Callable | None = None,
         create_trace: Callable | None = None,
         finalize_single_agent_response: Callable | None = None,
+        roll_organic_followup: Callable | None = None,
         cache_replay_strategy: CacheReplayStrategy | None = None,
         classification_strategy: ClassificationStrategy | None = None,
         dispatch_strategy: DispatchStrategy | None = None,
@@ -140,6 +145,7 @@ class PipelineDirector:
                 merge_voice_followup_and_organic=merge_voice_followup_and_organic,
                 finalize_single_agent_response=finalize_single_agent_response,
                 create_trace=create_trace,
+                roll_organic_followup=roll_organic_followup,
             )
         self._finalization_strategy = finalization_strategy
 

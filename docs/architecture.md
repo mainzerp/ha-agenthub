@@ -371,6 +371,19 @@ frame handed to the client.
   from the token relay and sends the localized text as the terminal
   frame's `mediated_speech`; tokens already relayed are never replaced.
   The `return` span records `speech_source` and `speech_localized`.
+- **Unconfirmed actions:** a single-agent result with
+  `metadata["verify_outcome"] == "unverified"` (set by
+  `ActionableAgent._apply_verification_outcome`; a multi-action result
+  carries it when any action is unconfirmed) skips personality mediation
+  in blocking and streaming turns, so the hedge is never rephrased into a
+  success claim. The speech is only localized in a non-English turn (a
+  pending reminder is appended unmediated). The `return` span records
+  `mediation_skipped: "verify_unconfirmed"`.
+- **Mediation prompt rules** (`prompts/mediate.txt`, `prompts/merge.txt`):
+  reported outcomes and hedges (unconfirmed, pending, in progress, failed;
+  in a merge this covers an unconfirmed action of any agent) are kept, and the
+  assistant speaks in the first person, never by a name or in the third
+  person. Follow-up questions: see Voice Follow-Up Questions.
 
 ### Filler / In-Stream Preamble
 
@@ -481,6 +494,23 @@ places the same id into the `ConversationResult`; the container's own
 `conversation_id` is a container-internal correlation key only and is
 never forwarded to HA (HA core regenerates unknown-but-valid ULIDs, which
 would silently break session continuity).
+
+Personality mediation and the multi-agent merge may add a closing
+question only when the turn's organic follow-up roll won
+(`OrchestratorAgent._roll_organic_followup`:
+`orchestrator.organic_followup_enabled` and `_probability`, source `ha`,
+no error, no armed enrollment). Only then does the prompt
+(`{organic_followup_hint}` in `mediate.txt` and `merge.txt`, filled by
+`app/agents/mediation.py::organic_followup_hint`) teach the
+`[FOLLOWUP]` tag, and only then does a mediated or merged tag count as a
+follow-up (pending question and `voice_followup`): blocking
+(`MediationService.mediate_response`, `_finalize_single_agent_response`),
+streamed, and merge (`MediationService.merge_responses`,
+`DefaultFinalizationStrategy`, which gets the roll as
+`roll_organic_followup`). Otherwise the prompt forbids added questions,
+offers and suggestions, and a tag is stripped from the spoken text but
+ignored. A question in an agent response itself keeps its follow-up
+through the agent's own `voice_followup` flag.
 
 The effective flag is decided in one helper,
 `app/agents/followup.py::resolve_voice_followup`, called by the
