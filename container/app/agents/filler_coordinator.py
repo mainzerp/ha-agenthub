@@ -28,6 +28,7 @@ the tests then mutate, so live ``get_value`` changes (e.g.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 import uuid
@@ -37,6 +38,11 @@ from app.a2a._request import build_send_request
 from app.models.agent import DispatchTask, TaskContext
 
 logger = logging.getLogger(__name__)
+
+# Outcome sink of the :class:`FillerGeneration` whose task is running. The
+# task copies the context at creation, so ``invoke_filler_agent`` can report a
+# rejected filler (``rejected_reason``) without changing its call signature.
+_FILLER_OUTCOME: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar("filler_outcome", default=None)
 
 
 class FillerGeneration:
@@ -64,7 +70,19 @@ class FillerGeneration:
         self.speculative = speculative
         self.start_ms = self.elapsed_ms()
         self.end_ms: float | None = None
-        self.task: asyncio.Task[str | None] = asyncio.create_task(self._run(factory))
+        # Filled by ``invoke_filler_agent`` when the filler agent's output
+        # failed validation: ``rejected_reason`` / ``rejected_text``.
+        self.outcome: dict[str, str] = {}
+        token = _FILLER_OUTCOME.set(self.outcome)
+        try:
+            self.task: asyncio.Task[str | None] = asyncio.create_task(self._run(factory))
+        finally:
+            _FILLER_OUTCOME.reset(token)
+
+    @property
+    def rejected_reason(self) -> str | None:
+        """Why the generated filler was dropped by validation, if it was."""
+        return self.outcome.get("rejected_reason")
 
     def elapsed_ms(self) -> float:
         """Milliseconds since the request start."""
@@ -161,6 +179,14 @@ class FillerCoordinator:
             result_data = self._dispatch_manager.normalize_agent_result(response, agent_id="filler-agent")
             speech = result_data.get("speech", "")
             if not speech or not speech.strip():
+                rejected_reason = (result_data.get("metadata") or {}).get("rejected_reason")
+                if rejected_reason:
+                    logger.debug("Filler agent output rejected (%s); no filler will be spoken", rejected_reason)
+                    sink = _FILLER_OUTCOME.get()
+                    if sink is not None:
+                        sink["rejected_reason"] = str(rejected_reason)
+                        sink["rejected_text"] = str(result_data["metadata"].get("rejected_text") or "")
+                    return None
                 logger.warning("Filler agent returned empty speech; no filler will be spoken")
                 return None
             return speech.strip()

@@ -12,7 +12,12 @@ from app.api.routes.conversation import _build_a2a_request
 from app.db.schema import _create_indexes, _create_tables, _seed_defaults
 from app.db.schema._migrations import _migrate_to_56, _run_migrations
 from app.models.conversation import ConversationRequest
-from app.security.user_input import load_wake_words, parse_wake_words, strip_leading_wake_word
+from app.security.user_input import (
+    load_wake_words,
+    match_wake_word_only,
+    parse_wake_words,
+    strip_leading_wake_word,
+)
 from tests.helpers import shutdown_aiosqlite
 
 
@@ -99,6 +104,28 @@ class TestStripLeadingWakeWord:
         assert strip_leading_wake_word("Alexa, licht an", (w for w in ["alexa"])) == ("licht an", "alexa")
 
 
+class TestMatchWakeWordOnly:
+    @pytest.mark.parametrize(
+        "utterance",
+        ["Alexa", "alexa", "ALEXA", "Alexa?", "Alexa!", "Alexa.", "  Alexa , ", '"Alexa"', "Alexa ...", "Alexa?!"],
+    )
+    def test_lone_wake_word_matches(self, utterance):
+        assert match_wake_word_only(utterance, ["Alexa"]) == "Alexa"
+
+    def test_multi_word_phrase_matches(self):
+        assert match_wake_word_only("Hey, Jarvis!", ["hey jarvis"]) == "hey jarvis"
+
+    @pytest.mark.parametrize(
+        "utterance",
+        ["Alexa, Küche einschalten", "Alexa Alexa", "Alexander", "Alexo", "Alex", "Hallo Alexa", "", "   ", "?"],
+    )
+    def test_anything_else_is_not_wake_word_only(self, utterance):
+        assert match_wake_word_only(utterance, ["Alexa"]) is None
+
+    def test_no_configured_wake_words(self):
+        assert match_wake_word_only("Alexa", []) is None
+
+
 class TestParseWakeWords:
     def test_splits_trims_and_drops_blanks(self):
         assert parse_wake_words(" alexa, hey jarvis ,, ok nabu ,") == ("alexa", "hey jarvis", "ok nabu")
@@ -139,6 +166,40 @@ class TestBuildA2aRequestWakeWords:
         _request, task = _build_a2a_request(conv_request, "message/stream", collector, wake_words=("alexa",))
         assert task.description == "schalte Kueche ein"
         collector.set_request_attribute.assert_called_once_with("wake_word_stripped", "alexa")
+
+    @pytest.mark.parametrize("method", ["message/send", "message/stream"])
+    @pytest.mark.parametrize("text", ["Alexa", "alexa?", "Alexa!"])
+    def test_wake_word_only_sets_flag_and_keeps_text(self, method, text):
+        collector = MagicMock()
+        collector.source = "ha"
+        conv_request = ConversationRequest(text=text, conversation_id="c1")
+        _request, task = _build_a2a_request(conv_request, method, collector, wake_words=("Alexa",))
+        assert task.description == text
+        assert task.context.wake_word_only is True
+        collector.set_request_attribute.assert_called_once_with("wake_word_only", "Alexa")
+
+    def test_command_after_wake_word_is_not_wake_word_only(self):
+        collector = MagicMock()
+        collector.source = "ha"
+        conv_request = ConversationRequest(text="Alexa, Küche einschalten", conversation_id="c1")
+        _request, task = _build_a2a_request(conv_request, "message/stream", collector, wake_words=("Alexa",))
+        assert task.description == "Küche einschalten"
+        assert task.context.wake_word_only is False
+        collector.set_request_attribute.assert_called_once_with("wake_word_stripped", "Alexa")
+
+    def test_text_without_wake_word_is_unchanged(self):
+        collector = MagicMock()
+        collector.source = "ha"
+        conv_request = ConversationRequest(text="Küche einschalten", conversation_id="c1")
+        _request, task = _build_a2a_request(conv_request, "message/send", collector, wake_words=("Alexa",))
+        assert task.description == "Küche einschalten"
+        assert task.context.wake_word_only is False
+        collector.set_request_attribute.assert_not_called()
+
+    def test_wake_word_only_without_configured_wake_words_is_not_flagged(self):
+        conv_request = ConversationRequest(text="Alexa", conversation_id="c1")
+        _request, task = _build_a2a_request(conv_request, "message/send", MagicMock(source="ha"))
+        assert task.context.wake_word_only is False
 
     def test_no_wake_words_leaves_text_untouched(self):
         collector = MagicMock()

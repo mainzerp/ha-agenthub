@@ -342,6 +342,9 @@ async def _trace_memory_retrieval(
 # ``memory_retrieval`` span ``skip_reason`` for a turn that never searched memory.
 MEMORY_SKIP_STATELESS_TASK = "stateless_task"
 
+# Root-span ``noise_reason`` for a turn finalized as noise without classification.
+NOISE_REASON_WAKE_WORD_ONLY = "wake_word_only"
+
 
 async def _record_memory_retrieval_skipped(span_collector: Any, reason: str) -> None:
     """Record a ``memory_retrieval`` span for a turn that skipped the memory search.
@@ -544,6 +547,18 @@ class _FillerSlot:
     @property
     def task(self) -> asyncio.Task | None:
         return self.generation.task if self.generation is not None else None
+
+
+def _apply_filler_rejection(span: dict[str, Any], generation: FillerGeneration | None) -> None:
+    """Record why validation dropped the generated filler (no-op when it was not rejected)."""
+    reason = getattr(generation, "rejected_reason", None)
+    if not reason:
+        return
+    span["metadata"]["rejected_reason"] = reason
+    span["metadata"]["rejected_text"] = generation.outcome.get("rejected_text", "")  # type: ignore[union-attr]
+    span["metadata"]["was_sent"] = False
+    span["metadata"]["cancelled"] = False
+    span["metadata"]["cancel_reason"] = "rejected"
 
 
 def _apply_filler_generate_timing(span: dict[str, Any], generation: FillerGeneration, t0_request_utc: datetime) -> None:
@@ -1421,6 +1436,28 @@ class OrchestratorAgent(BaseAgent):
         # DP-4: background turns early-exited above; only IngressTask reaches text reads.
         task = cast(IngressTask, task)
         user_text = task.description
+
+        # Wake-word-only turn (``TaskContext.wake_word_only``, set by the
+        # conversation routes from ``voice.wake_words``): nothing was asked,
+        # so finalize as noise before approval, cache and classification --
+        # no LLM call, no speaker or memory lookup. A pending approval or
+        # clarifying question stays armed (nothing consumed it).
+        if task.context is not None and task.context.wake_word_only:
+            discard_pending_speaker(conversation_id)
+            record_request_attribute(span_collector, "noise_reason", NOISE_REASON_WAKE_WORD_ONLY)
+            logger.debug("Wake-word-only turn finalized as noise without classification (%s)", conversation_id)
+            return PipelinePreludeResult(
+                conversation_id=conversation_id,
+                detected_language=context_language,
+                lang_turns=[],
+                span_collector=span_collector,
+                classifications=[(NOISE_AGENT, user_text, 1.0)],
+                routing_cached=False,
+                target_agent=NOISE_AGENT,
+                condensed_task=user_text,
+                confidence=1.0,
+                used_origin_context=False,
+            )
 
         # Sensitive-action approval: an answer to a pending approval question
         # is judged on the verbatim user text BEFORE cache replay and
@@ -2580,6 +2617,7 @@ class OrchestratorAgent(BaseAgent):
             fg_span["metadata"]["cancel_reason"] = reason
             if sequential_send:
                 fg_span["metadata"]["sequential_send"] = True
+            _apply_filler_rejection(fg_span, generation)
             _apply_filler_generate_timing(fg_span, generation, t0_request_utc)
 
     async def _stream_turn(
@@ -2856,7 +2894,7 @@ class OrchestratorAgent(BaseAgent):
 
             # Record filler_generate span: real generation window (task start
             # to completion), not the threshold race.
-            if seq_filler_generated and seq_generation is not None:
+            if seq_generation is not None and (seq_filler_generated or seq_generation.rejected_reason):
                 async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
                     fg_span["metadata"]["threshold_ms"] = seq_filler_threshold_ms
                     fg_span["metadata"]["target_agent"] = content_agent_for_filler
@@ -2867,6 +2905,7 @@ class OrchestratorAgent(BaseAgent):
                         # Finished but unused: the dispatch answered first.
                         fg_span["metadata"]["cancelled"] = False
                         fg_span["metadata"]["cancel_reason"] = "agent_first"
+                    _apply_filler_rejection(fg_span, seq_generation)
                     _apply_filler_generate_timing(fg_span, seq_generation, t0_request_utc)
 
             # Record filler_send span
@@ -3289,7 +3328,7 @@ class OrchestratorAgent(BaseAgent):
         # Record filler_generate span (always, if filler was generated -- even
         # if not sent): real generation window (task start to completion), not
         # the threshold race.
-        if sc.filler_generated and filler_generation is not None:
+        if filler_generation is not None and (sc.filler_generated or filler_generation.rejected_reason):
             async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
                 fg_span["metadata"]["threshold_ms"] = filler_threshold_ms
                 fg_span["metadata"]["target_agent"] = target_agent
@@ -3299,6 +3338,7 @@ class OrchestratorAgent(BaseAgent):
                     # Finished but unused: the agent's first chunk won.
                     fg_span["metadata"]["cancelled"] = False
                     fg_span["metadata"]["cancel_reason"] = sc.filler_skip_reason or "agent_first"
+                _apply_filler_rejection(fg_span, filler_generation)
                 _apply_filler_generate_timing(fg_span, filler_generation, t0_request_utc)
 
         # Record filler_send span (only if filler was actually yielded to user)

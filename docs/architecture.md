@@ -424,6 +424,12 @@ on the SSE/WS streams.
   non-streaming path never generates a filler. On a single-slot local
   LLM backend shared by classifier and filler model the speculative
   call queues against classification; turn the setting off there.
+- Validation: the generated text is dropped (no filler is spoken) when it
+  has more than 15 words (`MAX_FILLER_WORDS`), more than one sentence, or a
+  label prefix (a word ending in a colon among the first three words, for
+  example "Short answer: ..."). The check is language-agnostic
+  (`app/agents/filler.py::filler_rejection_reason`) and covers the
+  speculative and the dispatch-time generation alike.
 - Cleanup: the per-turn filler slot in `_handle_task_stream_impl`
   cancels and awaits any remaining filler task on every exit (early
   exits, multi-agent, errors, client cancellation).
@@ -433,8 +439,11 @@ on the SSE/WS streams.
   `cancelled` (the generation was still running and was cut off) and
   `cancel_reason`, the discard reason: `target_not_eligible`,
   `multi_agent`, `noise`, `cancel_interaction`, a prelude exit type, or
-  `agent_first` (finished, but the agent answered first). `filler_send`
-  is a zero-length span at push time.
+  `agent_first` (finished, but the agent answered first). A filler dropped
+  by validation records `rejected_reason` (`too_long`, `multi_sentence`,
+  `label_prefix`) and `rejected_text` with `was_sent=false` and
+  `cancel_reason="rejected"`. `filler_send` is a zero-length span at push
+  time.
 
 The HA integration prepends the filler to the assistant
 message as an in-stream preamble (the first chat-log content delta), so
@@ -741,6 +750,19 @@ Optional; off by default (`voice.speaker_id.enabled`). Flow:
    trace summary is created. The prelude logs one INFO line per such
    turn (conversation id, outcome, status, reason). Typed, API and
    AI-task turns have no marked entry and are processed normally.
+
+Wake-word-only turns. When `voice.wake_words` is set and the utterance of
+`/api/conversation`, `/api/conversation/stream` or `/ws/conversation`
+consists of nothing but a configured wake phrase plus whitespace and
+punctuation (`app/security/user_input.py::match_wake_word_only`; only the
+configured phrases count, no variants), the route sets
+`TaskContext.wake_word_only` and records the root-span attribute
+`wake_word_only`. The orchestrator prelude then finalizes the turn as noise
+(`_finalize_noise_turn`) before approval, cache lookup, speaker lookup,
+memory and classification: no classify or other LLM span, routing agent
+`noise`, root-span `noise_reason="wake_word_only"`, empty speech and the same
+frames as an LLM noise verdict (no stored turn, no voice follow-up). A
+pending approval or clarifying question stays armed.
 
 Personalization identity (`app/agents/personalization.py`):
 `personalization_user_id(context)` returns the request's `user_id`

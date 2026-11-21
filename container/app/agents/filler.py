@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 
 from app.agents.base import (
     _LANGUAGE_NAMES,  # noqa: F401 -- re-exported for test compat
@@ -22,6 +23,37 @@ logger = logging.getLogger(__name__)
 # while the real agent is still working; if Groq is itself slow, give
 # up rather than block the streaming path.
 _FILLER_LLM_TIMEOUT_SEC = 3.0
+
+# Post-check limits mirroring the prompt contract (one short sentence, max 15
+# words, no answer). Language-agnostic: counts words, sentence terminators and
+# a label colon only; no language-specific phrase tables.
+MAX_FILLER_WORDS = 15
+_SENTENCE_SPLIT_RE = re.compile(
+    r"[.!?\N{HORIZONTAL ELLIPSIS}]+(?:\s+|$)|[\N{IDEOGRAPHIC FULL STOP}\N{FULLWIDTH EXCLAMATION MARK}\N{FULLWIDTH QUESTION MARK}]+"
+)
+_LABEL_COLONS = (":", "\N{FULLWIDTH COLON}")
+_LABEL_PREFIX_WORDS = 3
+
+REJECT_TOO_LONG = "too_long"
+REJECT_MULTI_SENTENCE = "multi_sentence"
+REJECT_LABEL_PREFIX = "label_prefix"
+
+
+def filler_rejection_reason(text: str) -> str | None:
+    """Return why a generated filler must not be spoken, or ``None`` when it is fine.
+
+    A filler is one short sentence that does not answer. The LLM sometimes
+    returns a labelled multi-sentence answer ("Short answer: ..."), which
+    TTS would speak as the reply; such text is dropped (no filler spoken).
+    """
+    words = text.split()
+    if len(words) > MAX_FILLER_WORDS:
+        return REJECT_TOO_LONG
+    if any(word.endswith(_LABEL_COLONS) for word in words[:_LABEL_PREFIX_WORDS]):
+        return REJECT_LABEL_PREFIX
+    if sum(1 for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()) > 1:
+        return REJECT_MULTI_SENTENCE
+    return None
 
 
 @agent(
@@ -103,7 +135,16 @@ class FillerAgent(BaseAgent):
                     (config_row or {}).get("max_tokens") or "unknown",
                 )
                 return TaskResult(speech="")
-            return TaskResult(speech=result.strip())
+            filler_text = result.strip()
+            rejected_reason = filler_rejection_reason(filler_text)
+            if rejected_reason is not None:
+                logger.debug(
+                    "Filler rejected (%s, agent=%s): %r", rejected_reason, target_agent or "speculative", filler_text
+                )
+                return TaskResult(
+                    speech="", metadata={"rejected_reason": rejected_reason, "rejected_text": filler_text[:200]}
+                )
+            return TaskResult(speech=filler_text)
         except TimeoutError:
             logger.warning("Filler generation timed out (>%.0fs)", _FILLER_LLM_TIMEOUT_SEC)
             return TaskResult(speech="")

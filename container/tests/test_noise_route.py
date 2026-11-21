@@ -255,3 +255,100 @@ class TestNoiseParse:
         assert chunks[0]["routed_to"] == NOISE_AGENT
         dispatcher.dispatch.assert_not_awaited()
         dispatcher.dispatch_stream.assert_not_awaited()
+
+
+class TestWakeWordOnlyNoise:
+    """A wake-word-only turn is finalized as noise before cache and classification."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with patch("app.agents.conversation_manager.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
+    @staticmethod
+    def _task(conversation_id: str, text: str = "Alexa?"):
+        task = make_ingress_task(description=text, context=TaskContext(language="de", wake_word_only=True))
+        task.conversation_id = conversation_id
+        return task
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_is_silent_without_classification(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orch()
+        orch._classify = AsyncMock()
+        collector = MagicMock()
+        task = self._task("w1")
+        task.span_collector = collector
+
+        result = await orch.handle_task(task)
+
+        assert result == {
+            "speech": "",
+            "conversation_id": "w1",
+            "routed_to": NOISE_AGENT,
+            "action_executed": None,
+            "voice_followup": False,
+        }
+        mock_complete.assert_not_awaited()
+        orch._classify.assert_not_awaited()
+        dispatcher.dispatch.assert_not_awaited()
+        orch._cache_manager.try_replay_action.assert_not_awaited()
+        orch._cache_manager.try_routing_skip.assert_not_awaited()
+        assert mock_track.await_args.args[0] == NOISE_AGENT
+        assert "w1" not in orch._conversation_manager._conversations
+        collector.set_request_attribute.assert_any_call("noise_reason", "wake_word_only")
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_yields_the_noise_done_frame(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher = _make_orch()
+
+        chunks = [chunk async for chunk in orch.handle_task_stream(self._task("w2", "Alexa"))]
+
+        assert chunks == [
+            {
+                "token": "",
+                "done": True,
+                "conversation_id": "w2",
+                "mediated_speech": "",
+                "routed_to": NOISE_AGENT,
+                "sanitized": True,
+            }
+        ]
+        mock_complete.assert_not_awaited()
+        dispatcher.dispatch.assert_not_awaited()
+        dispatcher.dispatch_stream.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_pending_question_stays_armed(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, _dispatcher = _make_orch()
+        orch._conversation_manager.set_pending_question("w3", "Küche oder Küchenzeile?", "light-agent")
+
+        result = await orch.handle_task(self._task("w3"))
+
+        assert result["routed_to"] == NOISE_AGENT
+        assert orch._conversation_manager.has_pending_question("w3")
+        mock_complete.assert_not_awaited()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_unflagged_turn_still_classifies(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, _dispatcher = _make_orch()
+        mock_complete.return_value = f"{NOISE_AGENT} (92%): lone word"
+
+        task = make_ingress_task(description="Alexa", context=TaskContext(language="de"))
+        task.conversation_id = "w4"
+        result = await orch.handle_task(task)
+
+        assert result["routed_to"] == NOISE_AGENT
+        assert mock_complete.await_count == 1

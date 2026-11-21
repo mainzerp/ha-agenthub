@@ -85,16 +85,8 @@ def _compile_wake_patterns(phrases: tuple[str, ...]) -> tuple[tuple[str, re.Patt
     return tuple(compiled)
 
 
-def strip_leading_wake_word(text: str, wake_words: Iterable[str]) -> tuple[str, str | None]:
-    """Remove one configured wake phrase from the very start of ``text``.
-
-    Returns ``(remaining_text, matched_phrase)``. Matching is case-insensitive,
-    anchored at the start (after leading whitespace/punctuation), word-boundary
-    safe and tolerant of punctuation between the phrase words; separators
-    after the phrase are consumed and the casing of the rest is preserved. The
-    longest matching phrase wins. When nothing would remain (only the wake
-    word was spoken), ``text`` is returned unchanged with ``None``.
-    """
+def _match_leading_wake_word(text: str, wake_words: Iterable[str]) -> tuple[int, str | None]:
+    """Return ``(end_offset, phrase)`` of the longest wake phrase at the start of ``text``."""
     patterns = _compile_wake_patterns(tuple(phrase for phrase in wake_words if phrase and phrase.strip()))
     best_end = -1
     best_phrase: str | None = None
@@ -103,12 +95,41 @@ def strip_leading_wake_word(text: str, wake_words: Iterable[str]) -> tuple[str, 
         if match is not None and match.end() > best_end:
             best_end = match.end()
             best_phrase = phrase
+    return best_end, best_phrase
+
+
+def strip_leading_wake_word(text: str, wake_words: Iterable[str]) -> tuple[str, str | None]:
+    """Remove one configured wake phrase from the very start of ``text``.
+
+    Returns ``(remaining_text, matched_phrase)``. Matching is case-insensitive,
+    anchored at the start (after leading whitespace/punctuation), word-boundary
+    safe and tolerant of punctuation between the phrase words; separators
+    after the phrase are consumed and the casing of the rest is preserved. The
+    longest matching phrase wins. When nothing would remain (only the wake
+    word was spoken), ``text`` is returned unchanged with ``None``; use
+    :func:`match_wake_word_only` to detect that case.
+    """
+    best_end, best_phrase = _match_leading_wake_word(text, wake_words)
     if best_phrase is None:
         return text, None
     remaining = text[best_end:]
     if not _WORD_CHAR_RE.search(remaining):
         return text, None
     return remaining, best_phrase.strip()
+
+
+def match_wake_word_only(text: str, wake_words: Iterable[str]) -> str | None:
+    """Return the configured wake phrase when ``text`` consists of nothing else.
+
+    Input validation, not routing: only the configured ``voice.wake_words``
+    phrases count, and only whitespace/punctuation may surround them
+    ("Alexa", "alexa?", "Hey, Jarvis!"). Any other word makes it a normal
+    utterance (``None``).
+    """
+    best_end, best_phrase = _match_leading_wake_word(text, wake_words)
+    if best_phrase is None or _WORD_CHAR_RE.search(text[best_end:]):
+        return None
+    return best_phrase.strip()
 
 
 async def load_wake_words() -> tuple[str, ...]:

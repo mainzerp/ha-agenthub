@@ -795,3 +795,54 @@ class TestFillerAgentTargetLine:
 
         user_content = mock_complete.call_args[0][1][1]["content"]
         assert user_content.endswith("\n\nAgent: general-agent")
+
+
+# ---------------------------------------------------------------------------
+# Validation: a rejected filler is not spoken and is traced
+# ---------------------------------------------------------------------------
+
+_LABELLED_ANSWER = "Kurze Antwort: Das ist kein Ratschlag für alle. Im Zweifel bitte eine Hebamme oder Ärztin fragen."
+
+
+@patch("app.agents.orchestrator.SettingsRepository")
+@patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+@patch("app.agents.filler.SettingsRepository")
+@patch("app.llm.client.complete", new_callable=AsyncMock)
+class TestRejectedFiller:
+    @pytest.mark.parametrize("speculative", ["true", "false"])
+    async def test_rejected_filler_is_not_pushed_and_span_records_reason(
+        self, mock_complete, mock_filler_settings, mock_track, mock_settings, speculative
+    ):
+        mock_settings.get_value = _settings(filler__speculative_start=speculative)
+        mock_filler_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = _LABELLED_ANSWER
+        orch, dispatcher = _make_orchestrator()
+        # The real filler agent runs behind the (mocked) A2A dispatch.
+        filler_agent = FillerAgent()
+
+        async def _dispatch(request):
+            result = await filler_agent.handle_task(request.params["task"])
+            return result.model_dump(exclude_none=True)
+
+        dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._pipeline_director.run_classification = AsyncMock(side_effect=_classifier(_SINGLE_HIGH, delay=0.02))
+
+        async def _slow_stream(_req):
+            await asyncio.sleep(0.2)
+            yield {"token": "Antwort", "done": False}
+            yield {"token": "", "done": True}
+
+        dispatcher.dispatch_stream = _slow_stream
+        task = _make_task()
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert not [c for c in chunks if c.get("filler_push")]
+        assert not _spans(task, "filler_send")
+        (fg,) = _spans(task, "filler_generate")
+        meta = fg["metadata"]
+        assert meta["was_sent"] is False
+        assert meta["rejected_reason"] == "too_long"
+        assert meta["rejected_text"] == _LABELLED_ANSWER
+        assert meta["cancel_reason"] == "rejected"
+        assert meta["speculative"] is (speculative == "true")

@@ -227,6 +227,10 @@ class TaskContext(BaseModel):
     location_name: str = ""
     local_time: str = ""
     injection_detected: bool = False
+    # Set by the conversation routes when the utterance is only a configured
+    # wake word (``voice.wake_words``) plus whitespace/punctuation. The
+    # orchestrator finalizes such a turn as noise without classification.
+    wake_word_only: bool = False
     # Session memory: serialized MemoryMatch dicts from the prelude overlap
     # search (cache-miss path only). Read-only context for the General
     # Agent's system-prompt injection; None = no memory for this turn.

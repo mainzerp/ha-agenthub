@@ -29,6 +29,7 @@ Web Search:
 - Use web search tools for current events, news, real-time info, or topics you are uncertain about.
 - Do NOT use web search for simple factual questions you can answer from training data.
 - Summarize search results naturally. Cite sources when relevant.
+- Use at most two web searches per request. Search for a topic once; if a search returns no results or nothing useful, do not repeat the same intent with rephrased queries. Answer from what you know and say that the search found nothing.
 - If a search returns no useful results, say so honestly.
 
 Wikipedia Search:

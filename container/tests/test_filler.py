@@ -6,6 +6,8 @@ import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # Mock litellm before importing any app modules that depend on it
 _litellm_mock = MagicMock()
 
@@ -28,7 +30,7 @@ _litellm_mock.RateLimitError = _RateLimitError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
-from app.agents.filler import FillerAgent  # noqa: E402
+from app.agents.filler import FillerAgent, filler_rejection_reason  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.models.agent import (  # noqa: E402
     AgentCard,
@@ -536,3 +538,65 @@ class TestFillerEligibleAgents:
         from app.agents.actionable import MusicAgent
 
         assert MusicAgent._agent_meta["expected_latency"] == "high"
+
+
+class TestFillerValidation:
+    """The filler agent drops text that is not one short, non-answering sentence."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "One moment, let me check.",
+            "Einen Moment, ich schaue nach.",
+            "Hmm, let me think about that for a second...",
+            "Just a sec, checking the weather now!",
+            "Moment, ich suche das für dich heraus",
+            "Gleich ist es 10:30 Uhr, ich schaue nach.",
+            "\u4e00\u4e0b\u3002",
+        ],
+    )
+    def test_accepts_normal_filler(self, text):
+        assert filler_rejection_reason(text) is None
+
+    def test_rejects_more_than_fifteen_words(self):
+        assert filler_rejection_reason(" ".join(["word"] * 15)) is None
+        assert filler_rejection_reason(" ".join(["word"] * 16)) == "too_long"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["One moment. Let me check.", "Moment! Ich schaue nach.", "Wait? Hold on.", "Kurz warten\u3002Gleich da\u3002"],
+    )
+    def test_rejects_multiple_sentences(self, text):
+        assert filler_rejection_reason(text) == "multi_sentence"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Short answer: checking now", "Kurze Antwort: Moment bitte", "Answer: one sec", "Antwort\uff1a Moment"],
+    )
+    def test_rejects_label_prefix(self, text):
+        assert filler_rejection_reason(text) == "label_prefix"
+
+    def test_colon_after_the_first_three_words_is_not_a_label(self):
+        assert filler_rejection_reason("Let me check that for you: one moment") is None
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_agent_drops_the_trace_8685b6_filler(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+        text = "Kurze Antwort: Das ist kein Ratschlag für alle. Im Zweifel bitte eine Hebamme oder Ärztin fragen."
+        mock_complete.return_value = text
+        task = DispatchTask(description="generate_filler:\nquery", context=TaskContext(language="de"))
+        result = await FillerAgent().handle_task(task)
+        assert result.speech == ""
+        assert result.metadata["rejected_reason"] == "too_long"
+        assert result.metadata["rejected_text"] == text
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_agent_keeps_a_valid_filler(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "  Einen Moment, ich schaue nach.  "
+        task = DispatchTask(description="generate_filler:general-agent\nquery", context=TaskContext(language="de"))
+        result = await FillerAgent().handle_task(task)
+        assert result.speech == "Einen Moment, ich schaue nach."
+        assert "rejected_reason" not in result.metadata

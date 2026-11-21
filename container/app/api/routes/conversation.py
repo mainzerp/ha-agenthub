@@ -22,7 +22,12 @@ from app.middleware.rate_limit import WsMessageRateLimiter, get_client_ip_from_h
 from app.models.agent import IngressTask, TaskContext
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
-from app.security.user_input import load_wake_words, prepare_user_text, strip_leading_wake_word
+from app.security.user_input import (
+    load_wake_words,
+    match_wake_word_only,
+    prepare_user_text,
+    strip_leading_wake_word,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +243,8 @@ def _build_a2a_request(
 
     ``wake_words`` (the loaded ``voice.wake_words`` list, empty = off) are
     stripped from the start of the prepared text so cache keys,
-    classification and stored turns never see the spoken wake word.
+    classification and stored turns never see the spoken wake word. An
+    utterance that is only a wake word sets ``TaskContext.wake_word_only``.
     """
     # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
     # SpanCollector that the TracingMiddleware derived from the route
@@ -248,11 +254,20 @@ def _build_a2a_request(
     source = getattr(span_collector, "source", "api") if span_collector else "api"
     prepared_text = prepare_user_text(conv_request.text)
     description = prepared_text.text
+    wake_word_only = False
     if wake_words:
         description, stripped_wake_word = strip_leading_wake_word(description, wake_words)
         if stripped_wake_word is not None:
             logger.debug("Stripped leading wake word %r from the utterance", stripped_wake_word)
             record_request_attribute(span_collector, "wake_word_stripped", stripped_wake_word)
+        else:
+            # Only the wake word was spoken: the text stays as is, the
+            # orchestrator finalizes the turn as noise without an LLM call.
+            lone_wake_word = match_wake_word_only(description, wake_words)
+            if lone_wake_word is not None:
+                wake_word_only = True
+                logger.debug("Utterance is only the wake word %r", lone_wake_word)
+                record_request_attribute(span_collector, "wake_word_only", lone_wake_word)
     context = TaskContext(
         device_id=conv_request.device_id,
         area_id=conv_request.area_id,
@@ -263,6 +278,7 @@ def _build_a2a_request(
         source=source,
         conversation_resumable=conversation_resumable,
         injection_detected=prepared_text.injection_detected,
+        wake_word_only=wake_word_only,
     )
     task = IngressTask(
         description=description,
