@@ -12,7 +12,16 @@ from app.agents.action_executor import (
     call_service_with_verification,
     resolve_and_validate_entity,
 )
-from app.agents.executor_state_check import failure_speech, lacks_feature
+from app.agents.executor_state_check import (
+    TransportNoop,
+    failure_speech,
+    is_unavailable,
+    lacks_feature,
+    media_pause_accepted_states,
+    player_transport_noop,
+    unavailable_result,
+    verification_previous_state,
+)
 from app.agents.media_executor import normalize_volume_level
 from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
@@ -228,6 +237,38 @@ async def _verify_stalled_play_media(ha_client: Any, entity_id: str, before: dic
         await asyncio.sleep(_PLAY_MEDIA_POLL_SEC)
 
 
+async def _transport_noop_result(
+    noop: TransportNoop,
+    ha_client: Any,
+    domain: str,
+    service: str,
+    entity_id: str,
+    friendly_name: str,
+    action_name: str,
+    state_resp: Any,
+) -> dict:
+    """Result of a pause/stop that finds nothing playing (see ``player_transport_noop``)."""
+    if noop.send_command:
+        verify = await call_service_with_verification(
+            ha_client, domain, service, entity_id, expected_state=None, wait_for_state=False
+        )
+        if not verify["success"]:
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": failure_speech(action_name, friendly_name, verify),
+            }
+    return {
+        "success": True,
+        "entity_id": entity_id,
+        "new_state": state_resp.get("state") if isinstance(state_resp, dict) else None,
+        "noop": True,
+        "cacheable": False,
+        "speech": noop.speech,
+    }
+
+
 def _relative_volume_level(state_resp: Any, delta: float) -> float | None:
     """Absolute volume (0.0-1.0) for a relative change, or None when unknown."""
     attrs = state_resp.get("attributes") if isinstance(state_resp, dict) else None
@@ -350,16 +391,20 @@ async def execute_music_action(
     relative = False
     params = action.get("parameters") or {}
     state_resp = await _read_player_state(ha_client, entity_id)
-    if isinstance(state_resp, dict) and state_resp.get("state") == "unavailable":
+    if is_unavailable(state_resp):
         # A command to an unavailable player can never be confirmed; say so
         # instead of reporting it as sent.
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": "unavailable",
-            "speech": f"{friendly_name} is unavailable right now.",
-            "cacheable": False,
-        }
+        return unavailable_result(entity_id, friendly_name)
+
+    # A pause or stop on a player that reports nothing playing: the state may
+    # be stale (polling integrations), so the command is still sent once, but
+    # no state is awaited; the answer is the truthful "nothing is playing".
+    transport = {"media_pause": "pause", "media_stop": "stop"}.get(action_name, "")
+    noop = player_transport_noop(transport, state_resp, friendly_name)
+    if noop is not None:
+        return await _transport_noop_result(
+            noop, ha_client, domain, service, entity_id, friendly_name, action_name, state_resp
+        )
 
     if action_name == "volume_set" and "volume_level" not in service_data and isinstance(params, dict):
         delta = params.get("volume_delta")
@@ -387,6 +432,8 @@ async def execute_music_action(
         }
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    previous_state = verification_previous_state(state_resp)
+    accepted_states = media_pause_accepted_states(transport, previous_state)
     verify_call = call_service_with_verification(
         ha_client,
         domain,
@@ -394,6 +441,8 @@ async def execute_music_action(
         entity_id,
         service_data=service_data,
         expected_state=expected_state,
+        previous_state=previous_state,
+        accepted_states=accepted_states,
     )
     if action_name == "play_media":
         before = state_resp
@@ -428,6 +477,8 @@ async def execute_music_action(
         }
 
     new_state = verify["observed_state"]
+    # An accepted state (Alexa: idle after pause) is spoken as observed.
+    speech_state = new_state if accepted_states and new_state in accepted_states else expected_state
     result: dict[str, Any] = {
         "success": True,
         "action": action_name,
@@ -436,7 +487,7 @@ async def execute_music_action(
         "speech": build_verified_speech(
             friendly_name=friendly_name,
             action_name=action_name,
-            expected_state=expected_state,
+            expected_state=speech_state,
             observed_state=new_state,
             verified=verify["verified"],
             action_phrases=_ACTION_PHRASES,

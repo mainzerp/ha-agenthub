@@ -88,6 +88,15 @@ class WebSocketResetError(Exception):
     """
 
 
+def state_matches_expected(state: str | None, expected: str | frozenset[str] | None) -> bool:
+    """True when ``state`` satisfies ``expected`` (a state, a set of accepted states, or ``None`` = any)."""
+    if expected is None:
+        return True
+    if isinstance(expected, frozenset):
+        return state in expected
+    return state == expected
+
+
 class HAWebSocketClient:
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
@@ -104,7 +113,7 @@ class HAWebSocketClient:
         # (future, expected_state_or_None) tuples. Ordered FIFO so multiple
         # concurrent actions on the same entity resolve in the order they
         # registered.
-        self._state_waiters: dict[str, list[tuple[asyncio.Future[str], str | None]]] = {}
+        self._state_waiters: dict[str, list[tuple[asyncio.Future[str], str | frozenset[str] | None]]] = {}
         # PENDING-RESP: track in-flight command/result pairs for
         # request-response style WebSocket calls (e.g. entity_registry).
         self._pending_responses: dict[int, asyncio.Future[dict]] = {}
@@ -556,7 +565,7 @@ class HAWebSocketClient:
         self,
         entity_id: str,
         *,
-        expected: str | None = None,
+        expected: str | frozenset[str] | None = None,
     ) -> asyncio.Future[str]:
         """Register a waiter that resolves on the next matching state_changed.
 
@@ -567,8 +576,9 @@ class HAWebSocketClient:
         Args:
             entity_id: Entity to watch (e.g. ``"light.keller"``).
             expected: If given, only events whose ``new_state.state`` equals
-                this string resolve the waiter. ``None`` resolves on the
-                first ``state_changed`` event for the entity.
+                this string (or is a member of this set of accepted states)
+                resolve the waiter. ``None`` resolves on the first
+                ``state_changed`` event for the entity.
 
         Returns:
             An ``asyncio.Future`` that resolves with the observed
@@ -594,11 +604,11 @@ class HAWebSocketClient:
         waiters = self._state_waiters.get(entity_id)
         if not waiters:
             return
-        kept: list[tuple[asyncio.Future[str], str | None]] = []
+        kept: list[tuple[asyncio.Future[str], str | frozenset[str] | None]] = []
         for future, expected in waiters:
             if future.done():
                 continue
-            if expected is not None and state_value != expected:
+            if expected is not None and not state_matches_expected(state_value, expected):
                 kept.append((future, expected))
                 continue
             with contextlib.suppress(asyncio.InvalidStateError):

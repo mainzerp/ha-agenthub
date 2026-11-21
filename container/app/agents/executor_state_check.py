@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.agents.action_executor import VERIFY_MISMATCH
 from app.agents.approval_gate import gate_speech
@@ -160,6 +160,69 @@ def verification_previous_state(state_resp: Any) -> str | None:
     if not isinstance(state, str) or state.strip().lower() in _NON_COMPARABLE_STATES:
         return None
     return state
+
+
+def unavailable_speech(friendly_name: str) -> str:
+    """Speech for a command refused because the target entity is ``unavailable``."""
+    return f"{friendly_name} is unavailable right now."
+
+
+def is_unavailable(state_resp: Any) -> bool:
+    """True when the pre-call state object reports the entity as ``unavailable``."""
+    return isinstance(state_resp, dict) and state_resp.get("state") == "unavailable"
+
+
+def unavailable_result(entity_id: str, friendly_name: str) -> dict[str, Any]:
+    """Non-success executor result for an ``unavailable`` target (no service call, no wait)."""
+    return {
+        "success": False,
+        "entity_id": entity_id,
+        "new_state": "unavailable",
+        "speech": unavailable_speech(friendly_name),
+        "cacheable": False,
+    }
+
+
+# Players that are not playing anything: a pause or stop has nothing to act on.
+_IDLE_PLAYER_STATES: frozenset[str] = frozenset({"idle", "off", "standby"})
+
+# Alexa-style players settle as ``idle`` (not ``paused``) after a pause.
+MEDIA_PAUSE_ACCEPTED_STATES: frozenset[str] = frozenset({"idle"})
+
+
+class TransportNoop(NamedTuple):
+    """A ``pause``/``stop`` whose pre-call state says there is nothing to change."""
+
+    speech: str
+    # True: the command is still sent (no state wait), because the pre-call
+    # state may be stale; False: nothing is sent.
+    send_command: bool
+
+
+def player_transport_noop(transport: str, state_resp: Any, friendly_name: str) -> TransportNoop | None:
+    """Classify a ``pause`` or ``stop`` that has nothing to act on, else ``None``.
+
+    An idle/off/standby single player reports nothing playing, but polling
+    integrations (Alexa Media Player) can lag, so the command is still sent
+    once without waiting for a state (``paused`` could never be reached). A
+    ``pause`` on a paused player is already done and sends nothing. Groups
+    report an aggregate state and always run the normal verified path.
+    """
+    if transport not in ("pause", "stop") or is_group_state(state_resp) or not isinstance(state_resp, dict):
+        return None
+    state = state_resp.get("state")
+    if state in _IDLE_PLAYER_STATES:
+        return TransportNoop(f"Nothing is playing on {friendly_name}.", True)
+    if transport == "pause" and state == "paused":
+        return TransportNoop(f"{friendly_name} is already paused.", False)
+    return None
+
+
+def media_pause_accepted_states(transport: str, previous_state: str | None) -> frozenset[str] | None:
+    """Extra states that satisfy a ``pause`` issued while the player was ``playing``."""
+    if transport == "pause" and previous_state == "playing":
+        return MEDIA_PAUSE_ACCEPTED_STATES
+    return None
 
 
 def supported_features(state_resp: Any) -> int | None:

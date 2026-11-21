@@ -842,10 +842,12 @@ def classify_verification_outcome(
     *,
     previous_state: str | None = None,
     strict: bool = False,
+    accepted_states: frozenset[str] | None = None,
 ) -> str:
     """Classify an observed post-call state against the expected target.
 
-    - ``reached``: the target (or an equivalent terminal state).
+    - ``reached``: the target, an equivalent terminal state, or (opt-in) one of
+      the executor's explicit ``accepted_states``.
     - ``in_progress``: a transitional state (``TRANSITIONAL_STATES``).
     - ``mismatch``: a known fault state (``FAULT_STATES``, e.g. ``jammed``);
       or, when the caller passes the pre-call ``previous_state``, a
@@ -863,6 +865,8 @@ def classify_verification_outcome(
     if expected_state is None:
         return VERIFY_REACHED
     if observed_state == expected_state or observed_state in _EQUIVALENT_TARGET_STATES.get(expected_state, ()):
+        return VERIFY_REACHED
+    if accepted_states and observed_state in accepted_states:
         return VERIFY_REACHED
     if observed_state in TRANSITIONAL_STATES:
         return VERIFY_IN_PROGRESS
@@ -888,6 +892,8 @@ async def call_service_with_verification(
     poll_max: float | None = None,
     previous_state: str | None = None,
     strict: bool = False,
+    accepted_states: frozenset[str] | None = None,
+    wait_for_state: bool = True,
     device_class: str | None = None,
     device_class_known: bool = False,
 ) -> dict[str, Any]:
@@ -928,6 +934,14 @@ async def call_service_with_verification(
             state that differs from it counts as a contradiction.
         strict: Opt-in: any non-target, non-transitional state is a
             contradiction (no executor uses this today).
+        accepted_states: Extra states that count as the target for this one
+            call (the WS waiter and the poll resolve on any of them, so the
+            wait ends early, and the outcome is ``reached``). Used for a
+            media pause from ``playing``, which Alexa players settle as
+            ``idle`` instead of ``paused``. Requires ``expected_state``.
+        wait_for_state: ``False`` sends the call through the same path (approval
+            gate, write marker, error handling) but registers no state waiter
+            and does not poll. Pass ``expected_state=None`` with it.
         device_class / device_class_known: the target's device class when
             the caller already read it (covers); otherwise the approval gate
             looks it up.
@@ -990,7 +1004,13 @@ async def call_service_with_verification(
 
     call_result: Any = None
     observer: dict[str, Any] = {}
-    expect_state_fn = getattr(ha_client, "expect_state", None)
+    expect_state_fn = getattr(ha_client, "expect_state", None) if wait_for_state else None
+    # The waiter resolves on the target or any accepted state (a plain str
+    # when there is only the target, so the single-target call is unchanged).
+    accepted = accepted_states if expected_state and accepted_states else None
+    waiter_expected: str | frozenset[str] | None = (
+        frozenset({expected_state, *accepted}) if accepted and expected_state else expected_state
+    )
 
     async def _call_service() -> Any:
         # The double-execution guard (app.ha_client.action_marker) is flagged
@@ -1010,7 +1030,7 @@ async def call_service_with_verification(
             try:
                 cm = expect_state_fn(
                     entity_id,
-                    expected=expected_state,
+                    expected=waiter_expected,
                     timeout=ws_timeout,
                     poll_interval=poll_interval,
                     poll_max=poll_max,
@@ -1057,12 +1077,19 @@ async def call_service_with_verification(
     observer_state = observer.get("new_state") if observer else None
     if observed is None:
         observed = observer_state
-    elif expected_state and observed != expected_state and observer_state == expected_state:
+    elif (
+        expected_state
+        and observed != expected_state
+        and observer_state is not None
+        and (observer_state == expected_state or (accepted is not None and observer_state in accepted))
+    ):
         # The synchronous REST snapshot can catch an intermediate state
-        # ("locking"); the WS waiter saw the target state afterwards.
+        # ("locking"); the WS waiter saw the target (or accepted) state afterwards.
         observed = observer_state
 
-    outcome = classify_verification_outcome(expected_state, observed, previous_state=previous_state, strict=strict)
+    outcome = classify_verification_outcome(
+        expected_state, observed, previous_state=previous_state, strict=strict, accepted_states=accepted
+    )
     verified = outcome == VERIFY_REACHED
     records = _request_verify_records.get()
     if records is not None:

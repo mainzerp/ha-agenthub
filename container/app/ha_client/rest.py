@@ -18,7 +18,7 @@ import httpx
 from app.db.repository import SettingsRepository
 from app.ha_client.action_marker import note_ha_action_started
 from app.ha_client.auth import get_auth_headers
-from app.ha_client.websocket import EntityRegistryInfo, WebSocketResetError
+from app.ha_client.websocket import EntityRegistryInfo, WebSocketResetError, state_matches_expected
 from app.security.sensitive_actions import enforce_sensitive_call_policy, policy_already_enforced
 
 if TYPE_CHECKING:
@@ -885,7 +885,7 @@ class HARestClient:
         self,
         entity_id: str,
         *,
-        expected: str | None,
+        expected: str | frozenset[str] | None,
         timeout: float = 1.5,
         poll_interval: float = 0.25,
         poll_max: float = 1.0,
@@ -895,7 +895,8 @@ class HARestClient:
         Priority order:
           1. If a connected WS observer is available, register a waiter for the
              next ``state_changed`` event on ``entity_id`` (matching
-             ``expected`` if given). After the ``with`` body exits, wait up to
+             ``expected`` if given; a frozenset is a set of accepted states).
+             After the ``with`` body exits, wait up to
              ``timeout`` seconds for it to resolve.
           2. If no WS observer is connected or the waiter times out, fall back
              to polling :meth:`get_state` every ``poll_interval`` seconds for
@@ -959,7 +960,7 @@ class HARestClient:
     async def _poll_state_until(
         self,
         entity_id: str,
-        expected: str | None,
+        expected: str | frozenset[str] | None,
         *,
         interval: float,
         max_seconds: float,
@@ -985,7 +986,7 @@ class HARestClient:
                 state_resp = None
             if state_resp:
                 last_state = state_resp.get("state")
-                if expected is None or last_state == expected:
+                if state_matches_expected(last_state, expected):
                     return last_state
             if time.monotonic() >= deadline:
                 return last_state

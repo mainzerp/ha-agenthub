@@ -17,7 +17,13 @@ from app.agents.action_executor import (
     resolve_and_validate_entity,
     unverified_speech,
 )
-from app.agents.executor_state_check import failure_speech, is_redundant_action, verification_previous_state
+from app.agents.executor_state_check import (
+    failure_speech,
+    is_redundant_action,
+    is_unavailable,
+    unavailable_result,
+    verification_previous_state,
+)
 from app.entity.naming import entity_display_name
 from app.entity.visibility import entity_is_visible
 from app.ha_client.history_query import execute_recorder_history_query
@@ -332,6 +338,11 @@ async def execute_light_action(
         logger.debug("Pre-action state read failed for %s", entity_id, exc_info=True)
         state_resp = None
     current_state = state_resp.get("state") if isinstance(state_resp, dict) else None
+
+    if is_unavailable(state_resp):
+        # A command to an unavailable entity can never be confirmed: do not
+        # call the service or wait for a state change; say so instead.
+        return unavailable_result(entity_id, friendly_name)
 
     unsupported = _unsupported_reason(entity_id, friendly_name, state_resp, service_data)
     if unsupported:

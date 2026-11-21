@@ -33,6 +33,8 @@ from app.agents.executor_state_check import (
     failure_speech,
     is_redundant_action,
     lacks_feature,
+    media_pause_accepted_states,
+    player_transport_noop,
     verification_previous_state,
 )
 from app.db.repository import SettingsRepository
@@ -367,6 +369,31 @@ async def execute_media_action(
             "cacheable": False,
         }
 
+    # A pause or stop on a player that reports nothing playing: the state may
+    # be stale (polling integrations), so the command is still sent once, but
+    # no state is awaited; the answer is the truthful "nothing is playing".
+    noop = player_transport_noop(action_name, state_resp, friendly_name)
+    if noop is not None:
+        if noop.send_command:
+            verify = await call_service_with_verification(
+                ha_client, domain, service, entity_id, expected_state=None, wait_for_state=False
+            )
+            if not verify["success"]:
+                return {
+                    "success": False,
+                    "entity_id": entity_id,
+                    "new_state": None,
+                    "speech": failure_speech(action_name, friendly_name, verify),
+                }
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": current_state,
+            "noop": True,
+            "cacheable": False,
+            "speech": noop.speech,
+        }
+
     # Deterministic skip: only a parameterless action on a single player that
     # is already in the target state is redundant (groups always run).
     if is_redundant_action(action_name, state_resp, service_data):
@@ -379,6 +406,8 @@ async def execute_media_action(
         }
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    previous_state = verification_previous_state(state_resp)
+    accepted_states = media_pause_accepted_states(action_name, previous_state)
     verify = await call_service_with_verification(
         ha_client,
         domain,
@@ -386,7 +415,8 @@ async def execute_media_action(
         entity_id,
         service_data=service_data,
         expected_state=expected_state,
-        previous_state=verification_previous_state(state_resp),
+        previous_state=previous_state,
+        accepted_states=accepted_states,
     )
     if not verify["success"]:
         return {
@@ -401,6 +431,8 @@ async def execute_media_action(
         phrases = {**_ACTION_PHRASES, "mute": "unmuted"}
 
     new_state = verify["observed_state"]
+    # An accepted state (Alexa: idle after pause) is spoken as observed.
+    speech_state = new_state if accepted_states and new_state in accepted_states else expected_state
     result: dict[str, Any] = {
         "success": True,
         "action": action_name,
@@ -409,7 +441,7 @@ async def execute_media_action(
         "speech": build_verified_speech(
             friendly_name=friendly_name,
             action_name=action_name,
-            expected_state=expected_state,
+            expected_state=speech_state,
             observed_state=new_state,
             verified=verify["verified"],
             action_phrases=phrases,
