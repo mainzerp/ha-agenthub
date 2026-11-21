@@ -74,7 +74,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # in app/voice/model.py; the app falls back to a one-time download into
 # /data/models/speaker when this file is missing.
 ARG SPEAKER_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx
-ARG SPEAKER_MODEL_SHA256=c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5
+ARG SPEAKER_MODEL_SHA256=c4947caf150b8502fdd75bbe4089b971ab1ec42e90ee3ba547faca2cde44d9ee
 RUN mkdir -p /opt/models/speaker \
     && python -c "import hashlib, sys, urllib.request; \
 p = '/opt/models/speaker/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx'; \

@@ -153,8 +153,8 @@ class TestModelConstants:
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
             "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
         )
-        assert voice_model.MODEL_SHA256 == "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
-        assert voice_model.MODEL_SIZE_BYTES == 26_485_263
+        assert voice_model.MODEL_SHA256 == "c4947caf150b8502fdd75bbe4089b971ab1ec42e90ee3ba547faca2cde44d9ee"
+        assert voice_model.MODEL_SIZE_BYTES == 26_485_264
         assert SpeakerEngine().model_id == voice_model.MODEL_ID
 
     def test_dockerfile_ships_only_the_current_model(self):
