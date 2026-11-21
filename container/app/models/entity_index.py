@@ -43,6 +43,13 @@ class EntityIndexEntry(BaseModel):
         default_factory=list,
         description="Distinctive tokens parsed from entity_id (split on . and _).",
     )
+    entity_category: str | None = Field(
+        None,
+        description=(
+            "HA entity-registry entity_category when it is 'config' or 'diagnostic' (None otherwise); "
+            "agent keyword recall skips such entities unless their name is spoken in full."
+        ),
+    )
     state: str | None = Field(None, description="Current runtime state for background readers that need it")
     has_date: bool = Field(False, description="input_datetime runtime flag")
     has_time: bool = Field(False, description="input_datetime runtime flag")
@@ -109,6 +116,10 @@ class EntityIndexEntry(BaseModel):
             "device_name": self.device_name or "",
             "id_tokens": sorted(self.id_tokens or []),
         }
+        # Only set for config / diagnostic entities, so the hash of every
+        # other entity stays unchanged.
+        if self.entity_category:
+            payload["entity_category"] = self.entity_category
         if self.domain == "input_datetime":
             payload["state"] = self.state or ""
             payload["has_date"] = self.has_date

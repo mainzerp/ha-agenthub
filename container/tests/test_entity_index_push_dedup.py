@@ -41,7 +41,15 @@ def test_store_entity_lookups_atomic_assignment():
         {"light.kitchen_ceiling": "kitchen"},
     )
     lookups = app.state.entity_lookups
-    assert set(lookups.keys()) == {"area", "alias", "device", "area_id", "user_name", "name_suppressed"}
+    assert set(lookups.keys()) == {
+        "area",
+        "alias",
+        "device",
+        "area_id",
+        "user_name",
+        "name_suppressed",
+        "entity_category",
+    }
     assert lookups["area"] == {"kitchen": "Kitchen"}
     assert lookups["alias"] == {"light.kitchen_ceiling": ["main"]}
     assert lookups["device"] == {"light.kitchen_ceiling": "Kitchen Ceiling Device"}
@@ -69,6 +77,7 @@ def test_store_entity_lookups_handles_none_inputs():
         "area_id": {},
         "user_name": {},
         "name_suppressed": frozenset(),
+        "entity_category": {},
     }
 
 

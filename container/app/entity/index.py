@@ -97,6 +97,7 @@ class EntityIndex:
             "aliases": _json.dumps(entry.aliases or []),
             "device_name": entry.device_name or "",
             "id_tokens": _json.dumps(entry.id_tokens or []),
+            "entity_category": entry.entity_category or "",
             "state": entry.state or "",
             "has_date": "1" if entry.has_date else "0",
             "has_time": "1" if entry.has_time else "0",
@@ -157,6 +158,8 @@ class EntityIndex:
             aliases=aliases,
             device_name=meta.get("device_name", "") or None,
             id_tokens=id_tokens,
+            # Rows written before entity_category existed lack the key.
+            entity_category=meta.get("entity_category") or None,
             state=meta.get("state", "") or None,
             has_date=str(meta.get("has_date", "0")) == "1",
             has_time=str(meta.get("has_time", "0")) == "1",

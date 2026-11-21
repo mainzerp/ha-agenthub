@@ -58,7 +58,7 @@ from app.agents.base import (
 )
 from app.agents.decorator import agent
 from app.analytics.tracer import _optional_span
-from app.entity.tokens import entry_field_tokens, normalize_tokenize, token_in_query
+from app.entity.tokens import FuzzyTokenMatcher, entry_field_tokens, normalize_tokenize, token_in_query
 from app.entity.visibility import filter_visible_results
 from app.models.agent import (
     ActionExecuted,
@@ -306,6 +306,16 @@ _AMBIGUITY_ANNOTATION = (
     "(for example, 'Did you mean <name 1> or <name 2>?') in the user's language."
 )
 
+# Exact-name hint: exactly one candidate carries the full name the user said
+# (its friendly name or one alias; the most specific of several nested
+# names). The LLM still picks; the hint replaces the ambiguity note.
+# English-only per Directive 13.
+_EXACT_NAME_ANNOTATION = (
+    "Note: candidate {index} ({entity_id}) carries exactly the name the user said. "
+    "Prefer it over candidates whose names only partly match; do not ask which one is meant "
+    "unless the request clearly names another candidate."
+)
+
 # Follow-up inversion: on the turn answering a pending clarifying question,
 # tied candidates are resolved by the answer instead of re-asking. The
 # pending question is interpolated as delimited, length-bounded data.
@@ -372,15 +382,100 @@ _OPTIONAL_CANDIDATES_NOTE = (
 # injected. Larger domains are token-filtered down to the top N.
 _KEYWORD_RECALL_MAX_INJECT = 15
 _KEYWORD_RECALL_TOP_N = 12
+# Recall entries appended from ``TaskContext.last_entities`` when no
+# candidate carries name evidence ("turn it off").
+_KEYWORD_RECALL_LAST_ENTITIES = 3
+
+# Registry entity categories recall skips unless the entity's full name is
+# spoken (LED rings, firmware switches, signal sensors).
+_RECALL_SKIPPED_ENTITY_CATEGORIES = frozenset({"config", "diagnostic"})
+_UNAVAILABLE_STATE = "unavailable"
+
+# Recall score: per-field-class hit counts
+# ``(name_hits, fuzzy_name_hits, identity_hits, area_hits)``.
+RecallScore = tuple[int, int, int, int]
+_ZERO_RECALL_SCORE: RecallScore = (0, 0, 0, 0)
+
+
+def _recall_query_tokens(task: DispatchTask) -> set[str]:
+    """Folded recall tokens: the task description, plus the previous user turn while a question is pending.
+
+    The previous user turn joins only on the turn that answers a pending
+    clarifying question ("the ceiling one" after "Kitchen on?"). Otherwise it
+    would pull the previous request's devices into an unrelated new one
+    ("Esstisch on" after "Ambiente on"); anaphora ("turn it off") is served
+    by ``TaskContext.last_entities`` instead.
+    """
+    terms = [task.description] if task.description else []
+    context = task.context
+    if context is not None and context.pending_question and context.conversation_turns:
+        for turn in reversed(context.conversation_turns):
+            if turn.get("role") == "user" and turn.get("content"):
+                terms.append(turn["content"])
+                break
+    query_tokens: set[str] = set()
+    for term in terms:
+        query_tokens.update(normalize_tokenize(term))
+    return query_tokens
+
+
+def _exact_name_tokens(entry: Any, query_tokens: set[str]) -> frozenset[str] | None:
+    """Tokens of the longest friendly name or alias of ``entry`` spoken in full, else None."""
+    best: frozenset[str] | None = None
+    sources = [getattr(entry, "friendly_name", "") or ""]
+    sources.extend(getattr(entry, "aliases", None) or [])
+    for src in sources:
+        tokens = normalize_tokenize(src)
+        if tokens and tokens <= query_tokens and (best is None or len(tokens) > len(best)):
+            best = frozenset(tokens)
+    return best
+
+
+def _exact_name_candidate(recalled: list[tuple[Any, RecallScore]], query_tokens: set[str]) -> tuple[int, Any] | None:
+    """``(list index, entry)`` of the single candidate named exactly, else None.
+
+    Candidates whose full name is spoken compete; a name nested in a longer
+    spoken name ("Kitchen" inside "Kitchen Socket 1") yields to it. Two
+    distinct or identical full names leave no single exact candidate.
+    """
+    matches = [
+        (index, entry, tokens)
+        for index, (entry, _hits) in enumerate(recalled, start=1)
+        if (tokens := _exact_name_tokens(entry, query_tokens)) is not None
+    ]
+    maximal = [match for match in matches if not any(match[2] < other[2] for other in matches)]
+    if len(maximal) != 1:
+        return None
+    return maximal[0][0], maximal[0][1]
+
+
+def _is_unavailable(entry: Any) -> bool:
+    return getattr(entry, "state", None) == _UNAVAILABLE_STATE
+
+
+def _drop_outranked_unavailable(scored: list[tuple[Any, RecallScore]]) -> list[tuple[Any, RecallScore]]:
+    """Drop unavailable candidates an available candidate with name evidence outranks or ties.
+
+    Unreachable hardware (a satellite LED ring sharing the room name) must
+    not join a multi-device request. An unavailable entity that ranks above
+    every available name match (the user named it) stays, so the executor
+    can report it as unreachable.
+    """
+    available_named = [hits for entry, hits in scored if (hits[0] or hits[1]) and not _is_unavailable(entry)]
+    if not available_named:
+        return scored
+    best = max(available_named)
+    return [pair for pair in scored if not _is_unavailable(pair[0]) or pair[1] > best]
 
 
 def _recall_is_ambiguous(
-    scored: list[tuple[Any, tuple[int, int, int]]],
+    scored: list[tuple[Any, tuple[int, ...]]],
     preferred_area_id: str | None = None,
 ) -> bool:
     """True when the two best recall score tuples tie.
 
-    Scores are per-field-class int hit counts ``(name, identity, area)``;
+    Scores are per-field-class int hit counts
+    ``(name, fuzzy_name, identity, area)`` (any tuple length works);
     with int tuple scores the ``< _AMBIGUITY_SCORE_GAP`` semantics reduce
     to tuple equality, so ``_AMBIGUITY_SCORE_GAP`` is kept for documentation
     (it mirrors the area re-rank gap in deterministic_resolver.py) and no
@@ -394,7 +489,7 @@ def _recall_is_ambiguous(
     if len(scored) < 2:
         return False
     hits = sorted((hit_counts for _entry, hit_counts in scored), reverse=True)
-    if hits[0] == (0, 0, 0):
+    if not any(hits[0]):
         return False
     if hits[0] != hits[1]:
         return False
@@ -449,32 +544,46 @@ class ActionableAgent(BaseAgent):
     def _get_current_task_context(self) -> TaskContext | None:
         return _current_task_context_var.get()
 
-    async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, tuple[int, int, int]]]:
+    async def _recall_keyword_candidates(self, task: DispatchTask) -> list[tuple[Any, RecallScore]]:
         """Keyword/token entity recall over the agent's visible entities.
 
         ENTITY_RESOLUTION_REWORK: agent-side recall replaces both the
         orchestrator's ingress matcher pass and embedding-based entity
         recall. Each visible entry is scored per field class by normalized
-        token overlap against the task description plus the last user turn
-        (anaphora follow-ups), with compound containment (an entity token >=
-        ``app.entity.tokens.COMPOUND_MIN_TOKEN_LEN`` chars contained in a query
-        token counts as a hit) so German compounds match their parts. The
-        score is a ``(name_hits, identity_hits, area_hits)`` tuple so
-        name/alias evidence outranks area-token evidence. The name class
-        gets a +1 exact-name bonus when every token of the friendly name
-        (or of one alias) appears verbatim in the query, so an explicitly
-        named entity outranks partial name overlaps ("Küche" beats
-        "Küche Steckdose 1" for the query "Küche ausschalten"); identical
-        names both receive the bonus and stay tied.
+        token overlap against the recall query (:func:`_recall_query_tokens`:
+        the task description, plus the previous user turn only while a
+        clarifying question is pending), with compound containment (an
+        entity token >= ``app.entity.tokens.COMPOUND_MIN_TOKEN_LEN`` chars
+        contained in a query token counts as a hit) so German compounds
+        match their parts. The score is a ``(name_hits, fuzzy_name_hits,
+        identity_hits, area_hits)`` tuple so name/alias evidence outranks
+        area-token evidence. The name class gets a +1 exact-name bonus when
+        every token of the friendly name (or of one alias) appears verbatim
+        in the query, so an explicitly named entity outranks partial name
+        overlaps ("Küche" beats "Küche Steckdose 1" for the query "Küche
+        ausschalten"); identical names both receive the bonus and stay
+        tied. A name token without an exact or compound hit may score a
+        fuzzy name hit (speech-to-text misspellings, see
+        :class:`app.entity.tokens.FuzzyTokenMatcher`), which ranks below
+        every exact name hit. Single-digit entity_id tokens score no
+        identity hit (``entry_field_tokens``).
+
+        Filters: entities with registry ``entity_category`` ``config`` or
+        ``diagnostic`` are skipped unless their full name is spoken, and
+        ``unavailable`` entities are dropped when an available candidate
+        with name evidence outranks or ties them
+        (:func:`_drop_outranked_unavailable`).
 
         Small domains (<= ``_KEYWORD_RECALL_MAX_INJECT`` visible entities)
-        skip filtering: the whole visible list is returned, sorted by the
+        skip filtering: the whole remaining list is returned, sorted by the
         score tuple. Larger domains return the top ``_KEYWORD_RECALL_TOP_N``
         entries with at least one hit in any class (pure area queries must
-        stay recallable).
+        stay recallable). When no candidate carries name evidence, the
+        visible ``TaskContext.last_entities`` (anaphora: "turn it off") are
+        appended with a zero score.
 
-        Returns a list of ``(entry, (name_hits, identity_hits, area_hits))``
-        tuples.
+        Returns a list of ``(entry, (name_hits, fuzzy_name_hits,
+        identity_hits, area_hits))`` tuples.
         """
         if self._entity_index is None:
             return []
@@ -488,29 +597,23 @@ class ActionableAgent(BaseAgent):
         # (previously published by _resolve_relevant_entities).
         set_request_visible_entries(self._allowed_domains, agent_id, visible)
 
-        terms = [task.description] if task.description else []
-        if task.context and task.context.conversation_turns:
-            for turn in reversed(task.context.conversation_turns):
-                if turn.get("role") == "user" and turn.get("content"):
-                    terms.append(turn["content"])
-                    break
-        query_tokens: set[str] = set()
-        for term in terms:
-            query_tokens.update(normalize_tokenize(term))
+        query_tokens = _recall_query_tokens(task)
+        fuzzy = FuzzyTokenMatcher(query_tokens)
 
-        def _hits(entry: Any) -> tuple[int, int, int]:
-            counts = []
-            for class_tokens in entry_field_tokens(entry):
-                hits = 0
-                for token in class_tokens:
-                    if token_in_query(token, query_tokens):
-                        hits += 1
-                counts.append(hits)
-            name_sources = [getattr(entry, "friendly_name", "") or ""]
-            name_sources.extend(getattr(entry, "aliases", None) or [])
-            if any((tokens := normalize_tokenize(src)) and tokens <= query_tokens for src in name_sources):
-                counts[0] += 1
-            return counts[0], counts[1], counts[2]
+        def _hits(entry: Any, exact_name: bool) -> RecallScore:
+            name_tokens, identity_tokens, area_tokens = entry_field_tokens(entry)
+            name_hits = 0
+            fuzzy_hits = 0
+            for token in name_tokens:
+                if token_in_query(token, query_tokens):
+                    name_hits += 1
+                elif fuzzy.matches(token):
+                    fuzzy_hits += 1
+            identity_hits = sum(1 for token in identity_tokens if token_in_query(token, query_tokens))
+            area_hits = sum(1 for token in area_tokens if token_in_query(token, query_tokens))
+            if exact_name:
+                name_hits += 1
+            return name_hits, fuzzy_hits, identity_hits, area_hits
 
         # Satellite area ("here" / "this room"): entities in the area the
         # user is speaking from win ties and stay recallable in large
@@ -520,26 +623,59 @@ class ActionableAgent(BaseAgent):
         def _in_satellite_area(entry: Any) -> bool:
             return bool(satellite_area_id) and _entry_area(entry) == satellite_area_id
 
-        def _sort_key(pair: tuple[Any, tuple[int, int, int]]) -> tuple[int, int, int, int, int]:
-            name_hits, identity_hits, area_hits = pair[1]
+        def _sort_key(pair: tuple[Any, RecallScore]) -> tuple[int, int, int, int, int, int]:
+            name_hits, fuzzy_hits, identity_hits, area_hits = pair[1]
             # Ties: satellite area first, then shorter name -- the LLM makes the final decision.
             return (
                 -name_hits,
+                -fuzzy_hits,
                 -identity_hits,
                 -area_hits,
                 0 if _in_satellite_area(pair[0]) else 1,
                 len(getattr(pair[0], "friendly_name", "") or ""),
             )
 
+        scored: list[tuple[Any, RecallScore]] = []
+        for entry in visible:
+            exact_name = _exact_name_tokens(entry, query_tokens) is not None
+            if getattr(entry, "entity_category", None) in _RECALL_SKIPPED_ENTITY_CATEGORIES and not exact_name:
+                continue
+            scored.append((entry, _hits(entry, exact_name)))
+        scored = _drop_outranked_unavailable(scored)
+
         if len(visible) <= _KEYWORD_RECALL_MAX_INJECT:
-            scored = [(entry, _hits(entry)) for entry in visible]
             scored.sort(key=_sort_key)
             return scored
 
-        scored = [(entry, _hits(entry)) for entry in visible]
         scored = [pair for pair in scored if any(pair[1]) or _in_satellite_area(pair[0])]
         scored.sort(key=_sort_key)
-        return scored[:_KEYWORD_RECALL_TOP_N]
+        recalled = scored[:_KEYWORD_RECALL_TOP_N]
+        return self._with_last_entities(task, recalled, visible)
+
+    @staticmethod
+    def _with_last_entities(
+        task: DispatchTask, recalled: list[tuple[Any, RecallScore]], visible: list[Any]
+    ) -> list[tuple[Any, RecallScore]]:
+        """Append the visible recently controlled entities when no candidate has name evidence.
+
+        Anaphora ("turn it off") names no device; the recently controlled
+        entities (``TaskContext.last_entities``, most recent first) then
+        join the candidate list with a zero score instead of an empty recall.
+        """
+        context = task.context
+        if context is None or not context.last_entities:
+            return recalled
+        if any(hits[0] or hits[1] for _entry, hits in recalled):
+            return recalled
+        present = {getattr(entry, "entity_id", None) for entry, _hits in recalled}
+        by_id = {getattr(entry, "entity_id", None): entry for entry in visible}
+        result = list(recalled)
+        for last in context.last_entities[:_KEYWORD_RECALL_LAST_ENTITIES]:
+            entry = by_id.get(last.entity_id)
+            if entry is not None and last.entity_id not in present:
+                result.append((entry, _ZERO_RECALL_SCORE))
+                present.add(last.entity_id)
+        return result
 
     def _no_candidates_context(self) -> str | None:
         """Prompt context for an empty keyword recall, scoped by action declaration.
@@ -565,7 +701,7 @@ class ActionableAgent(BaseAgent):
 
     async def _build_query_candidate_context(
         self, task: DispatchTask
-    ) -> tuple[str | None, list[tuple[Any, tuple[int, int, int]]]]:
+    ) -> tuple[str | None, list[tuple[Any, RecallScore]]]:
         """Build the closed-contract candidate block from keyword recall.
 
         Returns ``(block, scored_candidates)``. The block lists candidates
@@ -610,6 +746,15 @@ class ActionableAgent(BaseAgent):
             "If none of the candidates fits the user's request, do NOT output a JSON action block: "
             "ask a short clarifying question in natural language instead."
         )
+        # Exact-name hint: one candidate carries exactly the spoken name.
+        # The LLM still decides; the hint replaces the ambiguity note.
+        exact = _exact_name_candidate(recalled, _recall_query_tokens(task))
+        if exact is not None:
+            index, exact_entry = exact
+            lines.append("")
+            lines.append(
+                _EXACT_NAME_ANNOTATION.format(index=index, entity_id=getattr(exact_entry, "entity_id", "") or "")
+            )
         # Phase 7: ambiguous top-1/top-2 gap -> ask, don't guess. The
         # clarifying question rides the existing voice_followup round-trip;
         # the deterministic *_ambiguous executor speech stays as fallback.
@@ -624,7 +769,7 @@ class ActionableAgent(BaseAgent):
                     sanitize_untrusted_text(context.pending_question, UNTRUSTED_TEXT_MAX_CHARS)
                 )
                 lines.append(_CHOOSE_AND_ACT_ANNOTATION.format(pending_question=pending))
-            else:
+            elif exact is None:
                 lines.append("")
                 lines.append(_AMBIGUITY_ANNOTATION)
         return "\n".join(lines), recalled
@@ -663,7 +808,7 @@ class ActionableAgent(BaseAgent):
 
     async def _candidate_context_or_none(
         self, task: DispatchTask
-    ) -> tuple[str | None, list[tuple[Any, tuple[int, int, int]]] | None]:
+    ) -> tuple[str | None, list[tuple[Any, RecallScore]] | None]:
         """Failure-contained wrapper around ``_build_query_candidate_context``.
 
         Returns ``(block, scored_candidates)``; ``(None, None)`` when the
@@ -1277,7 +1422,7 @@ class ActionableAgent(BaseAgent):
         # in the parent context so the visible-entries snapshot ContextVar
         # it publishes propagates to the post-LLM executor validation.
         candidate_context: str | None = None
-        recalled: list[tuple[Any, tuple[int, int, int]]] | None = None
+        recalled: list[tuple[Any, RecallScore]] | None = None
         try:
             async with _optional_span(span_collector, "entity_resolution", agent_id=agent_id) as er_span:
                 _t1 = time.perf_counter()
@@ -1291,7 +1436,12 @@ class ActionableAgent(BaseAgent):
                 er_span["metadata"]["recall_candidates"] = [
                     {
                         "entity_id": getattr(entry, "entity_id", "") or "",
-                        "hits": {"name": hits[0], "identity": hits[1], "area": hits[2]},
+                        "hits": {
+                            "name": hits[0],
+                            "fuzzy_name": hits[1],
+                            "identity": hits[2],
+                            "area": hits[3],
+                        },
                     }
                     for entry, hits in scored_recall
                 ]

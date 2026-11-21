@@ -106,6 +106,7 @@ def state_to_entity_index_entry(
     area_id_lookup: dict[str, str] | None = None,
     user_name_lookup: dict[str, str] | None = None,
     name_suppressed: frozenset[str] | set[str] | None = None,
+    entity_category_lookup: dict[str, str] | None = None,
 ) -> EntityIndexEntry:
     """Convert a Home Assistant state payload into an EntityIndexEntry.
 
@@ -122,7 +123,9 @@ def state_to_entity_index_entry(
     ``name_suppressed`` holds the ids whose own name collides (see
     :mod:`app.entity.naming`): together with ``device_lookup`` they decide
     whether ``friendly_name`` carries the entity's own name or HA's
-    friendly_name, which is always kept in ``ha_friendly_name``. All
+    friendly_name, which is always kept in ``ha_friendly_name``.
+    ``entity_category_lookup`` maps ``entity_id`` -> registry
+    ``entity_category`` (only ``config`` / ``diagnostic`` entities). All
     lookups are optional.
     """
     resolved_entity_id = entity_id or state.get("entity_id", "")
@@ -167,6 +170,7 @@ def state_to_entity_index_entry(
         aliases=aliases,
         device_name=device_name,
         id_tokens=_tokenize_entity_id(resolved_entity_id),
+        entity_category=(entity_category_lookup or {}).get(resolved_entity_id) or None,
         state=state.get("state"),
         has_date=bool(attrs.get("has_date", False)),
         has_time=bool(attrs.get("has_time", False)),
@@ -183,6 +187,7 @@ def parse_ha_states(
     hidden_ids: set[str] | None = None,
     user_name_lookup: dict[str, str] | None = None,
     name_suppressed: frozenset[str] | set[str] | None = None,
+    entity_category_lookup: dict[str, str] | None = None,
 ) -> list[EntityIndexEntry]:
     """Convert a Home Assistant states snapshot into index entries.
 
@@ -205,6 +210,7 @@ def parse_ha_states(
             area_id_lookup=area_id_lookup,
             user_name_lookup=user_name_lookup,
             name_suppressed=name_suppressed,
+            entity_category_lookup=entity_category_lookup,
         )
         for state in states
         if (state.get("entity_id") or "") not in hidden

@@ -11,12 +11,22 @@ import re
 import unicodedata
 from collections.abc import Iterable
 
+from rapidfuzz import fuzz
+
 from app.models.entity_index import EntityIndexEntry
 
 # An entity token of at least this many characters contained in a longer query
 # token counts as a hit, so German compounds match their parts
 # ("Kellerlicht" contains "keller" and "licht").
 COMPOUND_MIN_TOKEN_LEN = 4
+
+# Fuzzy name tokens (speech-to-text misspellings such as "Estisch" for
+# "Esstisch"): both folded tokens need at least this many characters, may
+# differ in length by at most ``FUZZY_MAX_LEN_DIFF``, must share their first
+# character, and need a similarity of at least ``FUZZY_MIN_SIMILARITY``.
+FUZZY_MIN_TOKEN_LEN = 6
+FUZZY_MAX_LEN_DIFF = 2
+FUZZY_MIN_SIMILARITY = 0.85
 
 
 def fold_text(text: str) -> str:
@@ -75,7 +85,9 @@ def entry_field_tokens(
     Returns ``(name_tokens, identity_tokens, area_tokens)``:
 
     - name: ``friendly_name`` plus each of ``aliases``
-    - identity: ``device_name`` plus each of ``id_tokens``
+    - identity: ``device_name`` plus each of ``id_tokens``, except single-digit
+      ``id_tokens`` (``light.flur_4``: a spoken number such as a volume level
+      must not hit every entity_id ending in that digit)
     - area: ``area`` plus ``area_name``
 
     Used by the recall scorer so name evidence can outrank area evidence;
@@ -88,7 +100,7 @@ def entry_field_tokens(
     for alias in entry.aliases or []:
         name_tokens.update(normalize_tokenize(alias))
     for token in entry.id_tokens or []:
-        identity_tokens.update(normalize_tokenize(token))
+        identity_tokens.update(t for t in normalize_tokenize(token) if not (len(t) == 1 and t.isdigit()))
     return name_tokens, identity_tokens, area_tokens
 
 
@@ -99,6 +111,49 @@ def token_in_query(token: str, query_tokens: set[str]) -> bool:
     return len(token) >= COMPOUND_MIN_TOKEN_LEN and any(
         len(qt) >= COMPOUND_MIN_TOKEN_LEN and token in qt for qt in query_tokens
     )
+
+
+def token_similarity(a: str, b: str) -> float:
+    """Normalized similarity of two folded tokens in ``[0, 1]`` (rapidfuzz Indel ratio)."""
+    return fuzz.ratio(a, b) / 100.0
+
+
+class FuzzyTokenMatcher:
+    """Fuzzy fallback for entity tokens that miss a query verbatim and as a compound part.
+
+    Built once per query. Cheap prefilters run before the similarity:
+    both tokens have at least ``FUZZY_MIN_TOKEN_LEN`` characters, their
+    lengths differ by at most ``FUZZY_MAX_LEN_DIFF``, and they share the
+    first character (query tokens are bucketed by it). The result per
+    entity token is memoized, so a token shared by many entities
+    ("licht") is compared once per query.
+    """
+
+    __slots__ = ("_buckets", "_memo")
+
+    def __init__(self, query_tokens: Iterable[str]) -> None:
+        self._buckets: dict[str, list[str]] = {}
+        for qt in query_tokens:
+            if len(qt) >= FUZZY_MIN_TOKEN_LEN and not qt.isdigit():
+                self._buckets.setdefault(qt[0], []).append(qt)
+        self._memo: dict[str, bool] = {}
+
+    def matches(self, token: str) -> bool:
+        """True when ``token`` is similar enough to one query token."""
+        if len(token) < FUZZY_MIN_TOKEN_LEN:
+            return False
+        bucket = self._buckets.get(token[0])
+        if not bucket:
+            return False
+        cached = self._memo.get(token)
+        if cached is not None:
+            return cached
+        result = any(
+            abs(len(token) - len(qt)) <= FUZZY_MAX_LEN_DIFF and token_similarity(token, qt) >= FUZZY_MIN_SIMILARITY
+            for qt in bucket
+        )
+        self._memo[token] = result
+        return result
 
 
 def text_names_any(text: str, names: Iterable[str]) -> bool:

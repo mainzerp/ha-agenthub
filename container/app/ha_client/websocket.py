@@ -28,17 +28,33 @@ class EntityRegistryInfo:
     ``hidden_ids``: entities HA hides or disables. ``user_names``: entity_id ->
     the entity's own name as HA's ``entity_name()`` sees it: the user-set
     registry ``name``, else the integration's ``original_name``. Rows with
-    neither (a device's main entity) are absent.
+    neither (a device's main entity) are absent. ``entity_categories``:
+    entity_id -> ``config`` / ``diagnostic`` (other entities are absent).
+    ``entity_ids``: every registry entity that is neither hidden nor
+    disabled (the ids whose aliases ``get_entity_aliases`` reads).
     """
 
     hidden_ids: frozenset[str] = frozenset()
     user_names: dict[str, str] = field(default_factory=dict)
+    entity_categories: dict[str, str] = field(default_factory=dict)
+    entity_ids: frozenset[str] = frozenset()
+
+
+# Registry entity categories that mark configuration and diagnostic entities
+# (LED rings, firmware switches, signal sensors) rather than user devices.
+NON_PRIMARY_ENTITY_CATEGORIES = frozenset({"config", "diagnostic"})
+
+# ``config/entity_registry/get_entries`` ids per request: the extended
+# entries are larger than list rows, so the alias read is batched.
+ENTITY_REGISTRY_ENTRIES_BATCH = 500
 
 
 def parse_entity_registry_rows(rows: list[Any]) -> EntityRegistryInfo:
-    """Extract hidden/disabled ids and own entity names from registry list rows."""
+    """Extract hidden/disabled ids, own entity names and entity categories from registry list rows."""
     hidden: set[str] = set()
+    visible: set[str] = set()
     user_names: dict[str, str] = {}
+    categories: dict[str, str] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -47,12 +63,52 @@ def parse_entity_registry_rows(rows: list[Any]) -> EntityRegistryInfo:
             continue
         if row.get("hidden_by") or row.get("disabled_by"):
             hidden.add(eid)
+        else:
+            visible.add(eid)
         for key in ("name", "original_name"):
             name = row.get(key)
             if isinstance(name, str) and name.strip():
                 user_names[eid] = name
                 break
-    return EntityRegistryInfo(hidden_ids=frozenset(hidden), user_names=user_names)
+        category = row.get("entity_category")
+        if isinstance(category, str) and category in NON_PRIMARY_ENTITY_CATEGORIES:
+            categories[eid] = category
+    return EntityRegistryInfo(
+        hidden_ids=frozenset(hidden),
+        user_names=user_names,
+        entity_categories=categories,
+        entity_ids=frozenset(visible),
+    )
+
+
+def parse_entity_registry_aliases(result: Any) -> dict[str, list[str]]:
+    """Extract ``{entity_id: [alias, ...]}`` from a ``config/entity_registry/get_entries`` result.
+
+    HA answers with ``{entity_id: extended_entry_or_null}``; a list of
+    entries is accepted too. ``null`` alias items are HA placeholders (the
+    entity's own name) and are skipped, like blank or non-string items.
+    """
+    if isinstance(result, dict):
+        entries: list[tuple[Any, Any]] = list(result.items())
+    elif isinstance(result, list):
+        entries = [(None, entry) for entry in result]
+    else:
+        return {}
+    aliases: dict[str, list[str]] = {}
+    for key, entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        eid = entry.get("entity_id") or key
+        raw = entry.get("aliases")
+        if not isinstance(eid, str) or not eid or not isinstance(raw, list):
+            continue
+        cleaned: list[str] = []
+        for alias in raw:
+            if isinstance(alias, str) and alias.strip() and alias not in cleaned:
+                cleaned.append(alias)
+        if cleaned:
+            aliases[eid] = cleaned
+    return aliases
 
 
 BASE_DELAY = 1.0
@@ -486,6 +542,30 @@ class HAWebSocketClient:
             len(info.user_names),
         )
         return info
+
+    async def get_entity_aliases(
+        self, entity_ids: list[str] | set[str] | frozenset[str]
+    ) -> dict[str, list[str]] | None:
+        """Read the per-entity aliases of ``entity_ids`` from HA's entity registry.
+
+        ``config/entity_registry/list`` omits aliases, so the extended
+        entries are read with ``config/entity_registry/get_entries`` in
+        batches of ``ENTITY_REGISTRY_ENTRIES_BATCH`` ids. Returns ``None``
+        when any batch fails (the caller keeps its previous aliases).
+        """
+        ids = sorted({eid for eid in entity_ids if isinstance(eid, str) and eid})
+        aliases: dict[str, list[str]] = {}
+        for start in range(0, len(ids), ENTITY_REGISTRY_ENTRIES_BATCH):
+            batch = ids[start : start + ENTITY_REGISTRY_ENTRIES_BATCH]
+            result = await self.send_command("config/entity_registry/get_entries", entity_ids=batch)
+            if not isinstance(result, (dict, list)):
+                self._logger.warning(
+                    "Entity alias read failed for %d of %d registry entities", len(ids) - start, len(ids)
+                )
+                return None
+            aliases.update(parse_entity_registry_aliases(result))
+        self._logger.info("Fetched aliases for %d of %d registry entities via WebSocket", len(aliases), len(ids))
+        return aliases
 
     async def get_hidden_entity_ids(self) -> set[str] | None:
         """Query HA's entity registry via WebSocket for hidden/disabled entities.

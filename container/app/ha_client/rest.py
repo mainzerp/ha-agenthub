@@ -541,7 +541,8 @@ class HARestClient:
 
     # ------------------------------------------------------------------
     # 0.23.0: registry-derived enrichment helpers used by entity ingest.
-    # All wrap /api/template with a small TTL cache. Each method returns
+    # All share a small TTL cache; most wrap /api/template, the entity
+    # registry and its aliases are WebSocket-only. Each method returns
     # an empty / None default on any failure so ingest never blocks.
     # ------------------------------------------------------------------
     def _registry_cache_get(self, key: str) -> Any | None:
@@ -632,29 +633,45 @@ class HARestClient:
         return await self._fetch_registry_lookup("area_registry", template, _parse)
 
     async def get_entity_aliases(self) -> dict[str, list[str]]:
-        """Return ``{entity_id: [alias, ...]}`` from HA per-entity aliases."""
-        template = (
-            "{% set ns = namespace(items=[]) %}"
-            "{% for s in states %}"
-            "{% set al = state_attr(s.entity_id, 'aliases') %}"
-            "{% if al %}"
-            "{% set ns.items = ns.items + [{'id': s.entity_id, 'aliases': al}] %}"
-            "{% endif %}{% endfor %}"
-            "{{ ns.items | tojson }}"
-        )
+        """Return ``{entity_id: [alias, ...]}`` from HA's entity registry.
 
-        def _parse(rows: list[Any]) -> dict[str, Any]:
-            result: dict[str, Any] = {}
-            for row in rows:
-                eid = row.get("id")
-                aliases = row.get("aliases") or []
-                if eid and isinstance(aliases, list):
-                    cleaned = [str(a) for a in aliases if isinstance(a, str) and a]
-                    if cleaned:
-                        result[eid] = cleaned
-            return result
-
-        return await self._fetch_registry_lookup("entity_aliases", template, _parse)
+        HA keeps per-entity aliases in the entity registry only (never in
+        state attributes), and ``config/entity_registry/list`` omits them:
+        the WebSocket client reads them per entity with
+        ``config/entity_registry/get_entries`` for every registry entity
+        that is neither hidden nor disabled. Cached for the registry TTL
+        like the other lookups (dropped by :meth:`clear_area_registry_cache`
+        on registry events); a failed read is not cached and returns the
+        last-good lookup, or an empty one before the first success.
+        """
+        key = "entity_aliases"
+        cached = self._registry_cache_get(key)
+        if cached is not None:
+            return cached
+        result: dict[str, list[str]] | None = None
+        registry = await self.get_entity_registry()
+        ws = self._state_observer
+        reader = getattr(ws, "get_entity_aliases", None) if ws is not None else None
+        if registry.entity_ids and callable(reader) and ws.is_connected():
+            try:
+                fetched = await reader(registry.entity_ids)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("WebSocket get_entity_aliases failed", exc_info=True)
+                fetched = None
+            if isinstance(fetched, dict):
+                result = fetched
+        if result is None:
+            last_good = self._registry_last_good.get(key)
+            logger.warning(
+                "HA entity alias lookup failed; %s",
+                "keeping last good lookup" if last_good is not None else "continuing without aliases",
+            )
+            return dict(last_good) if last_good is not None else {}
+        self._registry_last_good[key] = result
+        self._registry_cache_put(key, result)
+        return result
 
     async def get_device_names(self) -> dict[str, str]:
         """Return ``{entity_id: device_name}`` for entities with a parent device."""
