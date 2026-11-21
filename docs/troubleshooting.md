@@ -68,7 +68,7 @@ Navigate to `http://<host>:8080/setup/step/2` and use the "Test Connection" butt
 **Find the provider error:**
 
 - Log: `Transient LLM provider error for agent=<id> model=<model>: <Class> status=<code>; retry 1/1 in X.XXs` (WARNING) marks a retried call; a following error log for the same agent means the retry failed as well. `Transient LLM provider error <Class>(<status>) not retried: <reason>` (WARNING) means the retry was skipped (slow failure without a deadline, `Retry-After` over 2 s, or no deadline budget left). Authentication, bad-request, context-window and content-policy errors are never retried.
-- Trace: open the turn on the Traces page and select the span marked "Error" (usually `llm_provider_call` or `llm_call`). The Metadata section opens automatically for error spans and highlights `error_type`, `error_message` and `error_status` (e.g. `litellm.RateLimitError`, `429`). A retried `llm_provider_call` span also shows `retry_count` and `retried_error`.
+- Trace: open the turn on the Traces page and select the span marked "Error" (usually `llm_provider_call` or `llm_call`). The Metadata section opens automatically for error spans and highlights `error_type`, `error_message` and `error_status` (e.g. `litellm.RateLimitError`, `429`). A retried `llm_provider_call` span also shows `retry_count` and `retried_error`. If the span lasted much longer than its `latency_ms`, compare `total_ms`, `attempts`, `backoff_ms` and `usage_track_ms`: they split the span time into failed attempts, backoff and the usage-record write.
 
 **Test LLM connectivity:**
 

@@ -1571,7 +1571,8 @@ pattern): `user_id`, `speaker_ha_user_id`, `search_user_id`, `conversation_id`,
 Error and retry metadata (added keys only; the payload shape is unchanged):
 
 - A span that exited with an exception has `status: "error"` and metadata `error_type` (top-level package plus class, e.g. `litellm.RateLimitError`; builtins bare, e.g. `TimeoutError`), `error_message` (single line, secret-redacted and trace-sanitized, max 300 characters, omitted when empty) and `error_status` (integer HTTP status, only when the exception carries one). Keys the caller already set are not overwritten. Cache rewrite-failure spans do not carry these keys yet.
-- An `llm_provider_call` span that retried a transient provider error carries `retry_count` (retries made) and `retried_error` (`ClassName(status)`, e.g. `RateLimitError(429)`).
+- Every `llm_provider_call` span (streamed or not, tool rounds included) carries `attempts` (provider attempts inside the span, at least 1), `backoff_ms` (time slept between those attempts) and `total_ms` (wall time of the whole span: failed attempts, backoff and the usage-record write; for streams also the time the consumer holds the generator). `latency_ms` stays the successful attempt only, so `total_ms` minus `latency_ms` is the time spent elsewhere in the span; non-streaming spans record the usage-write share as `usage_track_ms`. A span that retried a transient provider error also carries `retry_count` (retries made) and `retried_error` (`ClassName(status)`, e.g. `RateLimitError(429)`).
+- A provider timeout that exits a span sets `error: "timeout"` on it; an empty completion sets `error: "empty"` on the span that produced it. The follow-up span of the single timeout/empty-response retry carries `retry` (`"timeout"` / `true`) and `retry_delay_ms` (the pause between the two spans); its own `attempts`/`backoff_ms`/`total_ms` cover only its own work.
 
 ---
 

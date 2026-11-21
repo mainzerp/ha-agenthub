@@ -328,8 +328,14 @@ frame handed to the client.
     error for agent=... model=...: <Class> status=<code>; retry 1/1 in
     X.XXs`; a skipped retry logs `Transient LLM provider error
     <Class>(<status>) not retried: <reason>`. The `llm_provider_call` span
-    records `retry_count` and `retried_error`; its latency, TTFT, TPS and
-    the token-usage record describe the successful attempt only.
+    records `retry_count`, `retried_error`, `attempts`, `backoff_ms` and
+    `total_ms`; its latency, TTFT, TPS and the token-usage record describe
+    the successful attempt only (field list: `docs/api-reference.md`).
+  - Provider SDK retries are off: every LiteLLM call passes
+    `max_retries=0` (`_PROVIDER_SDK_MAX_RETRIES`), so the OpenAI SDK client
+    behind OpenAI-compatible providers does not retry on its own (default 2,
+    ignoring the deadline and the `Retry-After` cap) and all retries are the
+    visible, deadline-aware ones of this module.
   - Limits are module constants (`_LLM_TRANSIENT_*`), not settings. When
     both attempts fail the agent returns its `llm_error` fallback.
 - **Fallback:** a dispatch that times out, raises, or (streaming) ends

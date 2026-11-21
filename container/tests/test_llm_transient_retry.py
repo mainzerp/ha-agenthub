@@ -616,6 +616,211 @@ class TestRetryMetrics:
         assert collector.spans[0]["metadata"]["latency_ms"] < 250
 
 
+def _provider_spans(collector: _SpanCollector) -> list[dict]:
+    return [s for s in collector.spans if s["name"] == "llm_provider_call"]
+
+
+_TOOLS = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+
+
+class TestSpanTimingMetadata:
+    """Every ``llm_provider_call`` span records attempts, backoff_ms and total_ms."""
+
+    async def test_first_try_success_records_one_attempt(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [_text_response("ok")]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete
+
+        await complete("light-agent", [{"role": "user", "content": "q"}], span_collector=collector)
+
+        (span,) = _provider_spans(collector)
+        meta = span["metadata"]
+        assert meta["attempts"] == 1
+        assert meta["backoff_ms"] == 0.0
+        assert meta["total_ms"] >= meta["latency_ms"]
+        assert "error" not in meta
+        assert "retry_count" not in meta
+
+    async def test_provider_sdk_retries_are_disabled(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [_text_response("ok")]
+
+        from app.llm.client import complete
+
+        await complete("light-agent", [{"role": "user", "content": "q"}])
+
+        assert acompletion.await_args.kwargs["max_retries"] == 0
+
+    async def test_total_ms_includes_the_slow_usage_write(self, llm_env):
+        acompletion = llm_env
+        response = _text_response("ok")
+        response.usage = _usage()
+        acompletion.side_effect = [response]
+        collector = _SpanCollector()
+
+        async def _slow_track(**_kwargs):
+            await asyncio.sleep(0.2)
+
+        from app.llm.client import complete
+
+        with patch("app.llm.client.track_token_usage", side_effect=_slow_track):
+            await complete("light-agent", [{"role": "user", "content": "q"}], span_collector=collector)
+
+        meta = _provider_spans(collector)[0]["metadata"]
+        assert meta["usage_track_ms"] >= 150
+        assert meta["total_ms"] >= 150
+        assert meta["latency_ms"] < 150
+
+    async def test_transient_retry_records_attempts_backoff_and_total(self, llm_env):
+        acompletion = llm_env
+        calls = {"n": 0}
+
+        async def _provider(**_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await asyncio.sleep(0.1)
+                raise _rate_limit()
+            return _text_response("ok")
+
+        acompletion.side_effect = _provider
+        collector = _SpanCollector()
+
+        from app.llm.client import complete
+
+        with patch("app.llm.client._LLM_TRANSIENT_RETRY_BASE_DELAY_SEC", 0.1):
+            await complete("light-agent", [{"role": "user", "content": "q"}], span_collector=collector)
+
+        (span,) = _provider_spans(collector)
+        meta = span["metadata"]
+        assert meta["attempts"] == 2
+        assert meta["retry_count"] == 1
+        assert meta["backoff_ms"] >= 90
+        assert meta["total_ms"] >= 190
+        assert meta["total_ms"] > meta["latency_ms"] + 150
+
+    async def test_timeout_retry_tags_first_span_and_records_delay(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [_ProviderTimeoutError("timed out"), _text_response("ok")]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete
+
+        with patch("app.llm.client._LLM_TIMEOUT_RETRY_DELAY_SEC", 0.1):
+            result = await complete("light-agent", [{"role": "user", "content": "q"}], span_collector=collector)
+
+        assert result == "ok"
+        first, second = _provider_spans(collector)
+        assert first["metadata"]["error"] == "timeout"
+        assert first["metadata"]["attempts"] == 1
+        assert first["metadata"]["total_ms"] >= 0
+        assert "latency_ms" not in first["metadata"]
+        assert second["metadata"]["retry"] == "timeout"
+        assert second["metadata"]["retry_delay_ms"] >= 90
+        assert second["metadata"]["attempts"] == 1
+        assert "error" not in second["metadata"]
+
+    async def test_empty_response_retry_tags_first_span_and_records_delay(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [_text_response(""), _text_response("ok")]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete
+
+        with patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0.1):
+            result = await complete("light-agent", [{"role": "user", "content": "q"}], span_collector=collector)
+
+        assert result == "ok"
+        first, second = _provider_spans(collector)
+        assert first["metadata"]["error"] == "empty"
+        assert first["metadata"]["attempts"] == 1
+        assert first["metadata"]["total_ms"] >= first["metadata"]["latency_ms"]
+        assert second["metadata"]["retry"] is True
+        assert second["metadata"]["retry_delay_ms"] >= 90
+        assert "error" not in second["metadata"]
+
+    async def test_stream_records_attempts_backoff_and_total(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [
+            _FakeStream([], error=_rate_limit()),
+            _FakeStream([_Chunk("ok", "stop")]),
+        ]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete_stream
+
+        with patch("app.llm.client._LLM_TRANSIENT_RETRY_BASE_DELAY_SEC", 0.1):
+            tokens = [
+                t
+                async for t in complete_stream(
+                    "light-agent", [{"role": "user", "content": "q"}], span_collector=collector
+                )
+            ]
+
+        assert tokens == ["ok"]
+        (span,) = _provider_spans(collector)
+        meta = span["metadata"]
+        assert meta["attempts"] == 2
+        assert meta["backoff_ms"] >= 90
+        assert meta["total_ms"] >= meta["backoff_ms"]
+        assert acompletion.await_args.kwargs["max_retries"] == 0
+
+    async def test_tool_loop_round_records_attempts_backoff_and_total(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [_rate_limit(), _text_response("answer")]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete_with_tools
+
+        with patch("app.llm.client._LLM_TRANSIENT_RETRY_BASE_DELAY_SEC", 0.1):
+            result = await complete_with_tools(
+                "light-agent",
+                [{"role": "user", "content": "q"}],
+                tools=_TOOLS,
+                tool_executor=AsyncMock(return_value="r"),
+                span_collector=collector,
+            )
+
+        assert result == "answer"
+        (span,) = _provider_spans(collector)
+        meta = span["metadata"]
+        assert meta["attempts"] == 2
+        assert meta["backoff_ms"] >= 90
+        assert meta["total_ms"] >= meta["backoff_ms"]
+        assert acompletion.await_args.kwargs["max_retries"] == 0
+
+    async def test_tool_stream_round_records_attempts_backoff_and_total(self, llm_env):
+        acompletion = llm_env
+        acompletion.side_effect = [
+            _FakeStream([], error=_rate_limit()),
+            _FakeStream([_Chunk("final", "stop")]),
+        ]
+        collector = _SpanCollector()
+
+        from app.llm.client import complete_with_tools_stream
+
+        with patch("app.llm.client._LLM_TRANSIENT_RETRY_BASE_DELAY_SEC", 0.1):
+            tokens = [
+                t
+                async for t in complete_with_tools_stream(
+                    "light-agent",
+                    [{"role": "user", "content": "q"}],
+                    tools=_TOOLS,
+                    tool_executor=AsyncMock(return_value="r"),
+                    span_collector=collector,
+                )
+            ]
+
+        assert tokens == ["final"]
+        (span,) = _provider_spans(collector)
+        meta = span["metadata"]
+        assert meta["attempts"] == 2
+        assert meta["backoff_ms"] >= 90
+        assert meta["total_ms"] >= meta["backoff_ms"]
+        assert acompletion.await_args.kwargs["max_retries"] == 0
+
+
 class TestActionableDeadline:
     """Domain agents bound the LLM call (and its transient retry) by the dispatch budget."""
 

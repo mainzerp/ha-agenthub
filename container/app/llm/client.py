@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -42,6 +43,79 @@ litellm.disable_aiohttp_transport = True
 
 class LLMError(Exception):
     """Raised when the LLM provider returns an unusable response."""
+
+
+# Retry count handed to LiteLLM, which forwards it to the OpenAI SDK client
+# (default there: 2 retries with 0.5-8 s backoff and ``Retry-After`` honoured up
+# to 60 s). Zero: this module owns retries (transient, timeout, empty response)
+# with deadline-aware budgets, and SDK-internal retries would stack on top of
+# them invisibly. Not sent to providers that do not use the OpenAI SDK.
+_PROVIDER_SDK_MAX_RETRIES = 0
+
+
+@contextlib.asynccontextmanager
+async def _provider_call_span(span_collector: Any, agent_id: str) -> AsyncGenerator[Any, None]:
+    """``llm_provider_call`` span that also records its own wall-time breakdown.
+
+    Span metadata: ``attempts`` (provider attempts made inside this span),
+    ``backoff_ms`` (time slept between those attempts, see
+    :func:`_sleep_before_retry`) and ``total_ms`` (wall time of the whole span
+    work: failed attempts, backoff, usage tracking; for streams it includes
+    the time the consumer holds the generator). ``latency_ms`` stays the
+    successful attempt only. A provider timeout is tagged ``error: timeout``.
+    """
+    started = time.perf_counter()
+    async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        metadata = pspan["metadata"]
+        metadata["attempts"] = 1
+        metadata["backoff_ms"] = 0.0
+        try:
+            yield pspan
+        except Exception as exc:
+            if _is_timeout_error(exc):
+                metadata["error"] = "timeout"
+            raise
+        finally:
+            metadata["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+
+
+async def _sleep_before_retry(pspan: Any, delay: float) -> None:
+    """Sleep the retry backoff and record it (``backoff_ms``, ``attempts``) on the span."""
+    started = time.perf_counter()
+    await asyncio.sleep(delay)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    try:
+        metadata = pspan["metadata"]
+        metadata["backoff_ms"] = round(metadata.get("backoff_ms", 0.0) + elapsed_ms, 2)
+        metadata["attempts"] = metadata.get("attempts", 1) + 1
+    except Exception:
+        logger.debug("Recording backoff metadata on the provider span failed", exc_info=True)
+
+
+async def _sleep_timed(delay: float) -> float:
+    """Sleep ``delay`` seconds between two provider spans; return the real sleep in ms."""
+    started = time.perf_counter()
+    await asyncio.sleep(delay)
+    return round((time.perf_counter() - started) * 1000, 2)
+
+
+def _tag_span_error(pspan: Any, kind: str) -> None:
+    """Record the failure kind (``timeout`` / ``empty``) of an attempt on its span."""
+    try:
+        pspan["metadata"]["error"] = kind
+    except Exception:
+        logger.debug("Recording the failure kind on the provider span failed", exc_info=True)
+
+
+async def _track_usage_timed(pspan: Any, **usage: Any) -> None:
+    """``track_token_usage`` that records its duration as ``usage_track_ms`` on the span.
+
+    The analytics insert runs after ``latency_ms`` is taken but inside the
+    span, so a slow database write shows up as span time ``latency_ms`` does not cover.
+    """
+    started = time.perf_counter()
+    await track_token_usage(**usage)
+    pspan["metadata"]["usage_track_ms"] = round((time.perf_counter() - started) * 1000, 2)
 
 
 # P3-11: backoff between the first LLM call and the single retry that
@@ -410,7 +484,7 @@ async def _acompletion_with_transient_retry(
                 raise
             retries += 1
             _note_transient_retry(pspan, exc, agent_id=agent_id, model=model, attempt=retries, delay=delay)
-            await asyncio.sleep(delay)
+            await _sleep_before_retry(pspan, delay)
             if deadline is not None:
                 call_kwargs["timeout"] = _bounded_timeout(config_timeout, deadline)
 
@@ -470,7 +544,8 @@ async def _record_nonstream_call_metrics(
     if extra_metadata:
         pspan["metadata"].update(extra_metadata)
     if hasattr(response, "usage") and response.usage:
-        await track_token_usage(
+        await _track_usage_timed(
+            pspan,
             agent_id=agent_id,
             provider=model.split("/")[0] if "/" in model else "unknown",
             tokens_in=response.usage.prompt_tokens or 0,
@@ -550,6 +625,7 @@ async def complete(
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=_bounded_timeout(config.timeout, deadline),
+            max_retries=_PROVIDER_SDK_MAX_RETRIES,
             **provider_params,
         )
         if reasoning_effort:
@@ -558,7 +634,7 @@ async def complete(
         if response_format:
             call_kwargs["response_format"] = response_format
             call_kwargs["drop_params"] = True
-        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        async with _provider_call_span(span_collector, agent_id) as pspan:
             response, t0 = await _acompletion_with_transient_retry(
                 call_kwargs, pspan, agent_id=agent_id, model=model, config_timeout=config.timeout, deadline=deadline
             )
@@ -580,6 +656,8 @@ async def complete(
                 max_tokens,
             )
         content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
+        if not content:
+            _tag_span_error(pspan, "empty")
 
         # Single retry on empty response (e.g. rate limiting). When the
         # completion was cut off (finish_reason="length" — typical for
@@ -621,9 +699,9 @@ async def complete(
                     model,
                     finish_reason_first,
                 )
-            await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
+            retry_delay_ms = await _sleep_timed(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
             call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
-            async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            async with _provider_call_span(span_collector, agent_id) as pspan:
                 response, t0 = await _acompletion_with_transient_retry(
                     call_kwargs, pspan, agent_id=agent_id, model=model, config_timeout=config.timeout, deadline=deadline
                 )
@@ -633,7 +711,7 @@ async def complete(
                     model=model,
                     t0=t0,
                     response=response,
-                    extra_metadata={"retry": True},
+                    extra_metadata={"retry": True, "retry_delay_ms": retry_delay_ms},
                 )
             if not response.choices:
                 raise LLMError("Empty choices from provider on retry")
@@ -684,10 +762,10 @@ async def complete(
                 )
                 raise
             logger.warning("LLM timeout for agent=%s model=%s, retrying once after 2s", agent_id, model)
-            await asyncio.sleep(_LLM_TIMEOUT_RETRY_DELAY_SEC)
+            retry_delay_ms = await _sleep_timed(_LLM_TIMEOUT_RETRY_DELAY_SEC)
             call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
             try:
-                async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                async with _provider_call_span(span_collector, agent_id) as pspan:
                     response, t0 = await _acompletion_with_transient_retry(
                         call_kwargs,
                         pspan,
@@ -702,7 +780,7 @@ async def complete(
                         model=model,
                         t0=t0,
                         response=response,
-                        extra_metadata={"retry": "timeout"},
+                        extra_metadata={"retry": "timeout", "retry_delay_ms": retry_delay_ms},
                     )
             except asyncio.CancelledError:
                 raise
@@ -776,6 +854,7 @@ async def complete_stream(
         temperature=temperature,
         timeout=_bounded_timeout(config.timeout, deadline),
         stream=True,
+        max_retries=_PROVIDER_SDK_MAX_RETRIES,
         **provider_params,
     )
     if reasoning_effort:
@@ -787,7 +866,7 @@ async def complete_stream(
 
     response = None
     try:
-        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        async with _provider_call_span(span_collector, agent_id) as pspan:
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
             pspan["metadata"]["streamed"] = True
@@ -849,7 +928,7 @@ async def complete_stream(
                     )
                     await _close_stream_response(response)
                     response = None
-                    await asyncio.sleep(delay)
+                    await _sleep_before_retry(pspan, delay)
                     call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
 
             if not saw_choice:
@@ -864,7 +943,8 @@ async def complete_stream(
             if usage:
                 tokens_out = usage.completion_tokens or 0
                 tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
-                await track_token_usage(
+                await _track_usage_timed(
+                    pspan,
                     agent_id=agent_id,
                     provider=model.split("/")[0] if "/" in model else "unknown",
                     tokens_in=usage.prompt_tokens or 0,
@@ -969,12 +1049,13 @@ async def complete_with_tools(
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=_bounded_timeout(config.timeout, deadline),
+            max_retries=_PROVIDER_SDK_MAX_RETRIES,
             **provider_params,
         )
         if reasoning_effort:
             tool_call_kwargs["reasoning_effort"] = reasoning_effort
             tool_call_kwargs["drop_params"] = True
-        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        async with _provider_call_span(span_collector, agent_id) as pspan:
             response, t0 = await _acompletion_with_transient_retry(
                 tool_call_kwargs,
                 pspan,
@@ -1135,12 +1216,13 @@ async def complete_with_tools(
         max_tokens=max_tokens,
         temperature=temperature,
         timeout=_bounded_timeout(config.timeout, deadline),
+        max_retries=_PROVIDER_SDK_MAX_RETRIES,
         **provider_params,
     )
     if reasoning_effort:
         final_kwargs["reasoning_effort"] = reasoning_effort
         final_kwargs["drop_params"] = True
-    async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+    async with _provider_call_span(span_collector, agent_id) as pspan:
         response, t0 = await _acompletion_with_transient_retry(
             final_kwargs, pspan, agent_id=agent_id, model=model, config_timeout=config.timeout, deadline=deadline
         )
@@ -1231,6 +1313,7 @@ async def complete_with_tools_stream(
             temperature=temperature,
             timeout=_bounded_timeout(config.timeout, deadline),
             stream=True,
+            max_retries=_PROVIDER_SDK_MAX_RETRIES,
             **provider_params,
         )
         if with_tools:
@@ -1245,7 +1328,7 @@ async def complete_with_tools_stream(
         content_parts: list[str] = []
         tool_calls_acc: dict[int, dict[str, str]] = {}
         finish_reason = None
-        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        async with _provider_call_span(span_collector, agent_id) as pspan:
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
             pspan["metadata"]["streamed"] = True
@@ -1316,7 +1399,7 @@ async def complete_with_tools_stream(
                     # a failed attempt is closed here before the retry backoff.
                     await _close_stream_response(response)
                 # Only reached on a transient-error retry (success breaks, other errors raise).
-                await asyncio.sleep(delay)
+                await _sleep_before_retry(pspan, delay)
                 call_kwargs["timeout"] = _bounded_timeout(config.timeout, deadline)
 
             ttft_ms = (first_chunk_time - t_call) * 1000 if first_chunk_time else None
@@ -1327,7 +1410,8 @@ async def complete_with_tools_stream(
             if usage:
                 tokens_out = usage.completion_tokens or 0
                 tps = tokens_out / (stream_ms / 1000.0) if stream_ms and stream_ms > 0 else None
-                await track_token_usage(
+                await _track_usage_timed(
+                    pspan,
                     agent_id=agent_id,
                     provider=model.split("/")[0] if "/" in model else "unknown",
                     tokens_in=usage.prompt_tokens or 0,
